@@ -52,8 +52,8 @@ LOCKED_PORTFOLIO_COINS = [
 # 2. RISK & ALLOCATION CONFIGURATION
 DEFAULT_CONFIG = {
     "initial_capital": 0.0,
-    "normal_risk_pct": 0.030,           # 3.0%
-    "throttled_risk_pct": 0.015,        # 1.5%
+    "normal_risk_pct": 0.010,           # 1.0% (STRATEGY_SPECIFICATION.md)
+    "throttled_risk_pct": 0.005,        # 0.5% (Throttled mode)
     "drawdown_throttling_enabled": True,# Factor 3 on/off switch
     "drawdown_throttle_threshold": 0.08,# 8.0%
     "max_open_capital_allocation": 0.20,# 20.0% max portfolio exposure
@@ -63,8 +63,8 @@ DEFAULT_CONFIG = {
     "margin_type": "ISOLATED",          # STRICTLY LOCKED: NEVER CROSS
     "maintenance_margin_rate": 0.005,   # 0.5% standard Binance MMR
     "max_allowed_leverage": 25,         # Hard ceiling on leverage
-    "max_daily_loss_pct": 0.100,        # -10.0% daily net loss kill switch
-    "max_daily_consecutive_losses": 999,  # Disabled (set >=999): avoid locking out on normal variance
+    "max_daily_loss_pct": 0.035,        # -3.5% daily net loss kill switch (STRATEGY_SPECIFICATION.md)
+    "max_daily_consecutive_losses": 3,  # Max 3 consecutive losses kill switch
     "max_allowed_slippage_pct": 0.002,  # 0.20% max entry slippage
     "session_filter_enabled": False,     # 24/7 continuous trading (session filter removed)
     "blocked_utc_hours": [],  # 01:00-03:00, 05:00-06:00, 18:00-21:00 UTC
@@ -798,20 +798,24 @@ class PortfolioRiskManager:
         min_viable_qty = round(max(min_qty, min_notional_qty), qty_prec)
 
         target_lev = 1
-        # Small Account Adaptation:
-        # If raw_position_size does not meet minimum contract size or min_notional:
+        # Risk Budget Preservation (Rule RISK-006):
+        # Never increase actual risk beyond permitted risk budget just to satisfy exchange minimums!
         if raw_position_size < min_viable_qty:
-            logger.info(
-                f"Small account adaptation [{sym_clean}]: Raw size {raw_position_size:.4f} is below "
-                f"exchange minimum {min_viable_qty}. Boosting to {min_viable_qty} and adjusting leverage."
-            )
+            effective_risk_dollars = min_viable_qty * price_risk
+            # Allow at most 5% tolerance for lot rounding (e.g. $10.00 vs $10.50)
+            if effective_risk_dollars > (trade_risk_dollars * 1.05):
+                logger.warning(
+                    f"Order rejected [{sym_clean}]: Sized quantity {raw_position_size:.4f} is below exchange "
+                    f"minimum {min_viable_qty}. Forcing minimum would risk ${effective_risk_dollars:.2f}, "
+                    f"exceeding permitted risk budget of ${trade_risk_dollars:.2f}."
+                )
+                return {
+                    "allowed": False,
+                    "reason": f"Required size ({raw_position_size:.4f}) is below exchange minimum ({min_viable_qty}). Rejected to prevent risk budget inflation.",
+                    "code": "BELOW_MIN_LOT_RISK_BUDGET"
+                }
             clamped_qty = min_viable_qty
             notional_value = clamped_qty * clamped_entry
-
-            # Calculate target leverage so required margin fits within max allocation (20% of balance)
-            max_alloc_dollars = self.balance * max_alloc_limit
-            if max_alloc_dollars > 0:
-                target_lev = math.ceil(notional_value / max_alloc_dollars)
         else:
             clamped_qty = exchange_filter_engine.clamp_quantity(sym_clean, raw_position_size)
             notional_value = clamped_qty * clamped_entry

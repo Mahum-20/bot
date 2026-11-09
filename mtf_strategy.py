@@ -197,14 +197,14 @@ class MTFStrategy:
                             entry_sig = None
 
                             if is_bull:
-                                if is_valid_bullish_engulfing(cand, prev):
+                                if is_valid_bullish_engulfing(prev, cand):
                                     entry_sig = "Bullish Engulfing"
-                                elif is_valid_morning_star(cand, prev, prev2):
+                                elif is_valid_morning_star(prev2, prev, cand):
                                     entry_sig = "Morning Star"
                             else:
-                                if is_valid_bearish_engulfing(cand, prev):
+                                if is_valid_bearish_engulfing(prev, cand):
                                     entry_sig = "Bearish Engulfing"
-                                elif is_valid_evening_star(cand, prev, prev2):
+                                elif is_valid_evening_star(prev2, prev, cand):
                                     entry_sig = "Evening Star"
 
                             if entry_sig:

@@ -103,10 +103,40 @@ def scan_cycle_engulfing(
     box_id: str = ""
 ) -> List[Dict]:
     """
-    Entry pattern scanning is currently dropped awaiting user redefinition.
-    Returns empty list.
+    Scans LTF candles within a reaction cycle for canonical candlestick reversals.
+    Enforces strict chronological argument ordering (prev, cand) and (prev2, prev, cand).
     """
-    return []
+    if not ltf_candles or len(ltf_candles) < 2:
+        return []
+
+    labels = []
+    n = len(ltf_candles)
+    for i in range(1, n):
+        prev = ltf_candles[i - 1]
+        cand = ltf_candles[i]
+
+        pat_name = None
+        if is_bullish and is_valid_bullish_engulfing(prev, cand):
+            pat_name = "Bullish Engulfing"
+        elif not is_bullish and is_valid_bearish_engulfing(prev, cand):
+            pat_name = "Bearish Engulfing"
+        elif i >= 2:
+            prev2 = ltf_candles[i - 2]
+            if is_bullish and is_valid_morning_star(prev2, prev, cand):
+                pat_name = "Morning Star"
+            elif not is_bullish and is_valid_evening_star(prev2, prev, cand):
+                pat_name = "Evening Star"
+
+        if pat_name:
+            labels.append({
+                "time": cand["time"],
+                "text": pat_name,
+                "price": cand["close"],
+                "box_id": box_id
+            })
+            if first_only:
+                break
+    return labels
 
 def get_engulfing_labels_for_cycle(
     symbol: str,
