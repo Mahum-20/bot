@@ -36,7 +36,6 @@ from portfolio_risk_manager import portfolio_risk_engine, LOCKED_PORTFOLIO_COINS
 
 from timeframe_allocation_manager import timeframe_allocation_engine
 
-from mtf_micro_engine import resolve_mtf_race_and_signals, detect_candlestick_patterns
 
 from ltf_approach_engine import compute_ltf_approach_structure
 
@@ -1193,7 +1192,7 @@ async def live_portfolio_monitor_task():
                         res = compute_ltf_approach_structure(
                             target_time=init_tap_time,
                             ltf_candles=closed_ltf,
-                            htf_boxes=[target_box],
+                            htf_boxes=available_htf_boxes,
                             htf_sec=htf_sec_val,
                             htf_candles=recent_htf,
                             override_tap_time=init_tap_time,

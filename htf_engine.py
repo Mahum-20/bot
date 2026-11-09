@@ -1,5 +1,5 @@
 import math
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any, Union
 
 
 def is_qualifying_htf_zone(box: Dict) -> bool:
@@ -24,7 +24,7 @@ def is_qualifying_htf_zone(box: Dict) -> bool:
     return False
 
 
-def is_htf_box_active(box: Dict, current_time: int, htf_sec: int = 14400) -> bool:
+def is_htf_box_active(box: Dict, current_time: int, htf_sec: Any = 14400) -> bool:
     """
     Checks if an HTF box is active and eligible to be traded at current_time:
     1. Must be a qualifying HTF zone (TJL1, TJL2 BOS, QML single CHoCH, SBR/RBS dual CHoCH, DT/DB, L3/L4).
@@ -32,6 +32,23 @@ def is_htf_box_active(box: Dict, current_time: int, htf_sec: int = 14400) -> boo
     3. Rolling 500-candle FIFO horizon: formation must not be older than 500 HTF bars (TradingView model).
     4. Must NOT be broken or mitigated by 2 closes beyond opposite boundary (Rule ZONE-003).
     """
+    if isinstance(htf_sec, str):
+        tf = htf_sec.lower()
+        if tf in ["15m", "m15"]:
+            htf_sec = 900
+        elif tf in ["1h", "h1"]:
+            htf_sec = 3600
+        elif tf in ["4h", "h4"]:
+            htf_sec = 14400
+        elif tf in ["1d", "d1"]:
+            htf_sec = 86400
+        elif tf.endswith("m"):
+            htf_sec = int(tf[:-1]) * 60
+        elif tf.endswith("h"):
+            htf_sec = int(tf[:-1]) * 3600
+        else:
+            htf_sec = 14400
+
     if not is_qualifying_htf_zone(box):
         return False
 

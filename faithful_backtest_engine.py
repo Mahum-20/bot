@@ -350,7 +350,7 @@ class FaithfulBacktestEngine:
                 res = compute_ltf_approach_structure(
                     target_time=init_tap,
                     ltf_candles=ltf_history_slice,
-                    htf_boxes=[target_b],
+                    htf_boxes=available_boxes,
                     htf_sec=self.htf_sec,
                     htf_candles=htf_history_slice,
                     override_tap_time=init_tap,

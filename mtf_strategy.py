@@ -15,14 +15,7 @@ the canonical TopG institutional methodology:
 import bisect
 from typing import List, Dict, Tuple, Optional, Any
 from htf_engine import HTFEngine, is_htf_box_active
-from pattern_scanner import (
-    is_valid_bullish_engulfing,
-    is_valid_bearish_engulfing,
-    is_valid_morning_star,
-    is_valid_evening_star,
-    is_non_doji
-)
-from ltf_approach_engine import is_valid_tap_approach, scan_ltf_trade_entry
+from ltf_approach_engine import is_valid_tap_approach, compute_ltf_approach_structure
 
 
 class ZoneExecutionTracker:
@@ -133,6 +126,7 @@ class MTFStrategy:
         current_time = htf_candles[-1]["time"]
         current_price = htf_candles[-1]["close"]
         ltf_sec = self.get_candle_duration_seconds(self.ltf_interval)
+        htf_sec = self.get_candle_duration_seconds(self.htf_interval)
         max_cycle_seconds = 120 * ltf_sec
 
         markers: List[Dict] = []
@@ -152,7 +146,7 @@ class MTFStrategy:
             zone_key = f"{box_name}_{box_left}_{b_top:.2f}_{b_bot:.2f}"
 
             # Check if box is active per 500-candle lookback and invalidation
-            if not is_htf_box_active(box_copy, current_time, self.htf_interval):
+            if not is_htf_box_active(box_copy, current_time, htf_sec):
                 box_copy["status"] = "INVALIDATED"
                 updated_boxes.append(box_copy)
                 continue
@@ -162,13 +156,11 @@ class MTFStrategy:
                 updated_boxes.append(box_copy)
                 continue
 
-            # Evaluate reaction cycles on LTF candles
+            # Evaluate reaction cycles on LTF candles via canonical compute_ltf_approach_structure
             trade_found = False
             if sorted_ltf and n_ltf >= 2:
-                # Find valid taps from outside
                 cycle_active = False
                 cycle_tap_time = 0
-                cycle_tap_idx = 0
 
                 for i in range(1, n_ltf):
                     cand = sorted_ltf[i]
@@ -182,69 +174,58 @@ class MTFStrategy:
                             if is_valid_tap_approach(box_copy, sorted_ltf, i):
                                 cycle_active = True
                                 cycle_tap_time = c_time
-                                cycle_tap_idx = i
 
-                    if cycle_active:
-                        # Check expiration (120 candles)
-                        if (c_time - cycle_tap_time) > max_cycle_seconds:
-                            cycle_active = False
-                            continue
+                                # Canonical pipeline: 5-wave vs CHoCH race -> retest -> pattern -> target model
+                                res = compute_ltf_approach_structure(
+                                    target_time=cycle_tap_time,
+                                    ltf_candles=sorted_ltf,
+                                    htf_boxes=htf_boxes,
+                                    htf_sec=htf_sec,
+                                    htf_candles=htf_candles,
+                                    override_tap_time=cycle_tap_time,
+                                    override_box=box_copy
+                                )
+                                tap_info = res.get("tap_info")
+                                if tap_info and tap_info.get("trade"):
+                                    tr = tap_info["trade"]
+                                    if tr.get("executed"):
+                                        entry_p = tr["entry_price"]
+                                        sl_p = tr["sl_price"]
+                                        tp_p = tr["tp_price"]
+                                        action = tr["action"]
+                                        pattern = tr.get("pattern_name", "")
+                                        sig_id = f"sig_{tr['time']}_{zone_key}"
+                                        sig_obj = {
+                                            "id": sig_id,
+                                            "time": tr["time"],
+                                            "action": action,
+                                            "type": action,
+                                            "entry": round(entry_p, 2),
+                                            "sl": round(sl_p, 2),
+                                            "tp": round(tp_p, 2),
+                                            "rr": tr.get("rr", self.min_rr),
+                                            "risk": round(tr.get("risk", abs(entry_p - sl_p)), 2),
+                                            "reward": round(tr.get("reward", abs(tp_p - entry_p)), 2),
+                                            "pattern": pattern,
+                                            "level": box_name,
+                                            "box_id": zone_key
+                                        }
+                                        marker_obj = {
+                                            "time": tr["time"],
+                                            "position": "belowBar" if is_bull else "aboveBar",
+                                            "color": "#00E676" if is_bull else "#FF5252",
+                                            "shape": "arrowUp" if is_bull else "arrowDown",
+                                            "text": f"{action} @ {entry_p:.2f} ({pattern} at {box_name})",
+                                            "id": sig_id
+                                        }
+                                        signals.append(sig_obj)
+                                        markers.append(marker_obj)
+                                        executed_zone_keys.add(zone_key)
+                                        trade_found = True
+                                        break
 
-                        # Check candlestick reversal confirmation
-                        if i >= cycle_tap_idx and i >= 2:
-                            prev = sorted_ltf[i - 1]
-                            prev2 = sorted_ltf[i - 2]
-                            entry_sig = None
-
-                            if is_bull:
-                                if is_valid_bullish_engulfing(prev, cand):
-                                    entry_sig = "Bullish Engulfing"
-                                elif is_valid_morning_star(prev2, prev, cand):
-                                    entry_sig = "Morning Star"
-                            else:
-                                if is_valid_bearish_engulfing(prev, cand):
-                                    entry_sig = "Bearish Engulfing"
-                                elif is_valid_evening_star(prev2, prev, cand):
-                                    entry_sig = "Evening Star"
-
-                            if entry_sig:
-                                entry_p = float(cand["close"])
-                                sl_p = float(b_bot - (entry_p * 0.0012)) if is_bull else float(b_top + (entry_p * 0.0012))
-                                risk_dist = abs(entry_p - sl_p)
-
-                                if risk_dist > 0:
-                                    reward_dist = risk_dist * self.min_rr
-                                    tp_p = (entry_p + reward_dist) if is_bull else (entry_p - reward_dist)
-                                    action = "BUY" if is_bull else "SELL"
-
-                                    sig_id = f"sig_{cand['time']}_{zone_key}"
-                                    sig_obj = {
-                                        "id": sig_id,
-                                        "time": cand["time"],
-                                        "action": action,
-                                        "type": action,
-                                        "entry": round(entry_p, 2),
-                                        "sl": round(sl_p, 2),
-                                        "tp": round(tp_p, 2),
-                                        "rr": self.min_rr,
-                                        "risk": round(risk_dist, 2),
-                                        "pattern": entry_sig,
-                                        "level": box_name,
-                                        "box_id": zone_key
-                                    }
-                                    marker_obj = {
-                                        "time": cand["time"],
-                                        "position": "belowBar" if is_bull else "aboveBar",
-                                        "color": "#00E676" if is_bull else "#FF5252",
-                                        "shape": "arrowUp" if is_bull else "arrowDown",
-                                        "text": f"{action} @ {entry_p:.2f} ({entry_sig} at {box_name})",
-                                        "id": sig_id
-                                    }
-                                    signals.append(sig_obj)
-                                    markers.append(marker_obj)
-                                    executed_zone_keys.add(zone_key)
-                                    trade_found = True
-                                    break
+                    if cycle_active and (c_time - cycle_tap_time) > max_cycle_seconds:
+                        cycle_active = False
 
             box_copy["status"] = "TRADED" if trade_found else ("INSIDE_ZONE" if (current_price >= b_bot and current_price <= b_top) else "FRESH")
             box_copy["trade_count"] = 1 if trade_found else 0

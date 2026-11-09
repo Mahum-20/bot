@@ -8,7 +8,12 @@ from typing import List, Dict, Optional, Tuple, Any
 
 from htf_engine import HTFEngine, is_qualifying_htf_zone, is_htf_box_active
 
-from pattern_scanner import is_valid_bullish_engulfing, is_valid_bearish_engulfing
+from pattern_scanner import (
+    is_valid_bullish_engulfing,
+    is_valid_bearish_engulfing,
+    is_valid_morning_star,
+    is_valid_evening_star
+)
 
 
 
@@ -1551,49 +1556,16 @@ def scan_ltf_trade_entry(
 
 
 
-        # 2. Check Star (3-Candle)
-
+        # 2. Check Star (3-Candle) via canonical pattern_scanner
         if not pattern_name and c_prev2 is not None:
-
-            c1_b = abs(c_prev2["close"] - c_prev2["open"])
-
-            c2_b = abs(c_prev["close"] - c_prev["open"])
-
-            c3_b = abs(c_curr["close"] - c_curr["open"])
-
-            is_star_c2 = (c2_b < c1_b) and (c2_b < c3_b)
-
-
-
             if is_bullish:
-
-                c1_red = c_prev2["close"] < c_prev2["open"]
-
-                c3_green = c_curr["close"] > c_curr["open"]
-
-                c3_deep = c_curr["close"] >= (c_prev2["open"] + c_prev2["close"]) / 2.0
-
-                if c1_red and c3_green and is_star_c2 and c3_deep:
-
+                if is_valid_morning_star(c_prev2, c_prev, c_curr):
                     pattern_name = "Morning Star"
-
                     pattern_candles = [c_prev2, c_prev, c_curr]
-
             else:
-
-                c1_green = c_prev2["close"] > c_prev2["open"]
-
-                c3_red = c_curr["close"] < c_curr["open"]
-
-                c3_deep = c_curr["close"] <= (c_prev2["open"] + c_prev2["close"]) / 2.0
-
-                if c1_green and c3_red and is_star_c2 and c3_deep:
-
+                if is_valid_evening_star(c_prev2, c_prev, c_curr):
                     pattern_name = "Evening Star"
-
                     pattern_candles = [c_prev2, c_prev, c_curr]
-
-
 
         if not pattern_name:
 
@@ -1737,34 +1709,28 @@ def scan_ltf_trade_entry(
 
 
 
+        act = "BUY" if is_bullish else "SELL"
+        lvl_n = clean_box_name(matched_level.get("text") or matched_level.get("name") or "Level")
         return {
-
             "id": f"trade_{c_curr['time']}",
-
-            "action": "BUY" if is_bullish else "SELL",
-
+            "action": act,
+            "type": act,
             "time": c_curr["time"],
-
             "entry_price": entry_price,
-
+            "entry": entry_price,
             "sl_price": sl_price,
-
+            "sl": sl_price,
             "tp_price": tp_price,
-
+            "tp": tp_price,
             "risk": risk,
-
             "reward": reward,
-
             "rr": rr,
-
-            "level_name": clean_box_name(matched_level.get("text") or matched_level.get("name") or "Level"),
-
+            "level_name": lvl_n,
+            "level": lvl_n,
             "pattern_name": pattern_name,
-
+            "pattern": pattern_name,
             "executed": is_executed,
-
             "status": "EXECUTED" if is_executed else "SKIPPED_RR_BELOW_2_5"
-
         }
 
 

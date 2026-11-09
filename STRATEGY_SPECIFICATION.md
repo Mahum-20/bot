@@ -455,18 +455,20 @@ The strategy is a multi-timeframe system operating across three concurrent confi
   $$\text{Risk Dollars} = \text{Balance} \times \text{RiskPct} \quad (\text{Default } 1.0\% = 0.01)$$
   $$\text{Position Size (Contracts)} = \frac{\text{Risk Dollars}}{|\text{Entry} - \text{SL}|}$$
   Clamped to Binance `step_size`, `min_qty`, and `min_notional` (\$5.00).
+  - **Strict Minimum Lot Budget Check:** If the exchange minimum viable quantity requires risking > 1.05x of the permitted risk budget, the trade is rejected (`BELOW_MIN_LOT_RISK_BUDGET`). Risk is never artificially inflated for small accounts.
 - **Dependencies:** Dynamic account equity, exchange filter engine.
-- **Action on Pass:** Order quantity determined.
-- **Invalidation / Failure:** If required margin exceeds available balance, order rejected.
+- **Action on Pass:** Order quantity determined within strict risk budget.
+- **Invalidation / Failure:** If required margin exceeds available balance or min-lot risk exceeds budget, order rejected.
 
-#### Rule `RISK-007`: Daily Drawdown Circuit Breaker (10% Max Daily Loss)
+#### Rule `RISK-007`: Daily Drawdown & Consecutive Losses Circuit Breaker (3.5% Max Daily Loss / 3 Consecutive Losses)
 - **Source File & Function:** [`portfolio_risk_manager.py:evaluate_new_trade()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/portfolio_risk_manager.py#L658-L665)
 - **Required Timeframe:** Daily Rolling (UTC Day 00:00:00 to 23:59:59)
 - **Mandatory / Optional:** Mandatory
 - **Logical Condition:**
-  $$\text{Daily Realized Loss} \ge \text{Daily Start Balance} \times 0.10$$
-- **Dependencies:** UTC day tracking, realized PnL accumulator.
-- **Action on Pass:** If breached, `circuit_breaker_active = True`.
+  $$\text{Daily Realized Loss} \ge \text{Daily Start Balance} \times 0.035 \quad (3.5\%)$$
+  $$\text{OR} \quad \text{Daily Consecutive Losses} \ge 3$$
+- **Dependencies:** UTC day tracking, realized PnL accumulator, consecutive loss counter.
+- **Action on Pass:** If either threshold is reached, `circuit_breaker_active = True`.
 - **Invalidation / Failure:** All trading halted until 00:00:00 UTC rollover.
 
 ---
@@ -521,10 +523,9 @@ During our inspection of the existing codebase, we identified **4 critical discr
 - **For 1H and 15M HTF Setups:** `ltf_approach_engine.py` line 1803 dynamically finds opposing unmitigated HTF liquidity pools (`find_nearest_htf_liquidity`) and enforces `rr >= 2.50`.
 - **Resolution for Backtester:** Preserve this exact divergence: 4H uses fixed 3.0R, while 1H/15M dynamically scan for opposing HTF swing liquidity pools.
 
-### Discrepancy 4: `ZONE_SINGLE_TRADE_REGISTRY` Scope
-- In `server.py`, a zone ID is added to `ZONE_SINGLE_TRADE_REGISTRY` once a trade is executed, preventing any future trades at that zone.
-- In `mtf_strategy.py`, `ZoneExecutionTracker` allows re-entries (`SL_HIT_REENTRY_AVAILABLE`) if an initial trade stops out.
-- **Resolution for Backtester:** In `server.py` (the live production system), `ZONE_SINGLE_TRADE_REGISTRY` permanently locks the zone after 1 trade to eliminate re-entry churn. The backtester must enforce this strict 1-trade-per-level registry.
+### Discrepancy 4: Single Source of Truth Across Strategy Engines (RESOLVED)
+- **Historical Divergence:** Previously, `mtf_strategy.py`, `faithful_backtest_engine.py`, and `server.py` contained competing implementations of reaction-cycle, candlestick reversal, and target calculations.
+- **Reconciled Architecture:** `mtf_strategy.py:process_trading_framework` has been unified to delegate directly to `compute_ltf_approach_structure` in `ltf_approach_engine.py`. Obsolete modules (`mtf_micro_engine.py`, `ltf_engine.py`) have been purged. Both live and backtest engines now execute the canonical 5-wave vs CHoCH race condition, intermediate level establishment, pattern extreme + ATR cushion SL, and profile-specific target model (4H fixed 3.0R; 1H/15M opposing HTF liquidity $\ge 2.5\text{R}$).
 
 ---
 

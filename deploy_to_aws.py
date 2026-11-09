@@ -11,7 +11,6 @@ DUCKDNS_HOST = "mayhembot.duckdns.org"
 BACKEND_FILES = [
     "htf_engine.py",
     "ltf_approach_engine.py",
-    "mtf_micro_engine.py",
     "mtf_strategy.py",
     "server.py",
     "main.py",
