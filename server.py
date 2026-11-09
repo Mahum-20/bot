@@ -305,7 +305,7 @@ def update_strategy():
 
     if len(htf_candles) >= 20:
 
-        strat = MTFStrategy(htf_interval=active_htf_interval, ltf_interval=target_ltf, min_rr=2.5)
+        strat = MTFStrategy(htf_interval=active_htf_interval, ltf_interval=target_ltf, min_rr=3.0)
 
         strat.htf_engine = HTFEngine(lookback_bars=len(htf_candles), show_tjl_boxes=True, tjl_extend=True)
 
@@ -1866,7 +1866,7 @@ async def get_chart_signals(
 
         else:
 
-            strat = MTFStrategy(htf_interval=tf, ltf_interval=ltf_tf, min_rr=2.5)
+            strat = MTFStrategy(htf_interval=tf, ltf_interval=ltf_tf, min_rr=3.0)
 
             strat.htf_engine = HTFEngine(lookback_bars=len(htf_c), show_tjl_boxes=True, tjl_extend=True)
 
@@ -2042,7 +2042,7 @@ async def get_signal_analysis(
 
 
 
-        strat = MTFStrategy(htf_interval=htf_tf, ltf_interval=ltf_tf, min_rr=2.5)
+        strat = MTFStrategy(htf_interval=htf_tf, ltf_interval=ltf_tf, min_rr=3.0)
 
         strat.htf_engine = HTFEngine(lookback_bars=500, show_tjl_boxes=True, tjl_extend=True)
 
