@@ -1,0 +1,739 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © nmahum216
+
+//@version=6
+indicator("LTF Buy & Sell SL TP", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ==========================================
+// INPUTS & CONFIGURATION
+// ==========================================
+grpLookback = "Lookback Configuration"
+lookbackBars = input.int(300, "Lookback Candles (Last N Bars)", minval=10, maxval=5000, group=grpLookback, tooltip="Restricts structure evaluation and drawings strictly to the last N candles up to live price")
+
+grpDisplay = "Display & Visual Settings"
+showBOS               = input.bool(true, "Show BOS (Break of Structure)", group=grpDisplay)
+showCHoCH             = input.bool(true, "Show CHoCH (Single Change of Character)", group=grpDisplay)
+showDualCHoCH         = input.bool(true, "Show Dual CHoCH", group=grpDisplay)
+showTripleCHoCH       = input.bool(true, "Show Triple CHoCH", group=grpDisplay)
+showRetracementShapes = input.bool(false, "Show Valid Pullback Shapes", group=grpDisplay)
+showActiveSwings      = input.bool(true, "Show Active Structure Levels", group=grpDisplay)
+useWickBreak          = input.bool(true, "Trigger BOS / CHoCH on Wick (vs Close)", group=grpDisplay, tooltip="If checked, High/Low wicks trigger BOS and CHoCH breaks. If unchecked, candle Close is required.")
+
+grpFVG = "CHoCH FVG & Signal Settings"
+showCHochFVG          = input.bool(true, "Show FRESH CHoCH & Triple CHoCH Leg FVGs", group=grpFVG, tooltip="Highlights 100% FRESH Fair Value Gaps formed inside Single CHoCH and Triple CHoCH legs (skips Dual CHoCH legs and pre-tapped FVGs)")
+showReversalSignals   = input.bool(true, "Show FVG Reversal Buy/Sell Signals", group=grpFVG, tooltip="Plots Buy/Sell signals when Engulfing or Morning/Evening Star patterns form on FIRST TOUCH of a fresh CHoCH / Triple CHoCH FVG AFTER CHoCH confirmation")
+showSlLines           = input.bool(true, "Draw Stop Loss (SL) Lines", group=grpFVG, tooltip="Plots Stop Loss lines beyond pattern wicks with proportional buffer")
+showTpLines           = input.bool(true, "Draw Take Profit (TP) Lines", group=grpFVG, tooltip="Plots Take Profit lines targeting nearest liquidity pool")
+minRR                 = input.float(2.5, "Minimum Risk:Reward Ratio (RR)", minval=1.0, step=0.1, group=grpFVG, tooltip="Minimum R:R floor (default 2.5 RR). No upper cap on maximum RR—targets liquidity pools at 5x, 10x+ RR!")
+slPropPercent         = input.float(0.04163, "Stop Loss Proportional Buffer (%)", minval=0.0, step=0.01, group=grpFVG, tooltip="Proportional SL buffer maintaining 2.402 -> 2.401 ratio (0.04163%) across all price levels")
+bullFvgColor          = input.color(color.new(color.green, 85), "Bullish FVG Color", group=grpFVG)
+bearFvgColor          = input.color(color.new(color.red, 85), "Bearish FVG Color", group=grpFVG)
+
+grpColors = "Color & Style Settings"
+bullColor     = input.color(color.green, "Bullish Structure Color", group=grpColors)
+bearColor     = input.color(color.red, "Bearish Structure Color", group=grpColors)
+dualChochCol  = input.color(color.orange, "Dual CHoCH Color", group=grpColors)
+tripleChochCol= input.color(color.purple, "Triple CHoCH Color", group=grpColors)
+swingHighCol  = input.color(color.new(color.red, 40), "Active High Level Color", group=grpColors)
+swingLowCol   = input.color(color.new(color.green, 40), "Active Low Level Color", group=grpColors)
+
+lineStyleInput = input.string("Solid", "Structure Line Style", options=["Solid", "Dashed", "Dotted"], group=grpColors)
+textSizeInput  = input.string("Tiny", "Label Text Size", options=["Tiny", "Small", "Normal", "Large"], group=grpColors)
+
+// Convert style inputs
+getLineStyle(styleStr) =>
+    switch styleStr
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+getTextSize(sizeStr) =>
+    switch sizeStr
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+lineStyle = getLineStyle(lineStyleInput)
+textSize  = getTextSize(textSizeInput)
+
+// Calculate dynamic starting bar for lookback (restricted to last 300 candles by default)
+startLookbackBar = math.max(0, last_bar_index - lookbackBars)
+inLookbackWindow = bar_index >= startLookbackBar
+
+// Proportional SL multiplier based on user requested 2.402 -> 2.401 ratio
+slMultiplier = slPropPercent / 100.0
+
+// ==========================================
+// TYPE DEFINITION & ARRAYS
+// ==========================================
+
+type ChochFVG
+    box   fvgBox
+    float top
+    float bottom
+    bool  isBullish
+    int   startBar
+    int   chochBar    // Bar index where CHoCH / Triple CHoCH was confirmed
+    bool  isMitigated
+    bool  signalFired
+    string chochType // "CHoCH" or "Triple CHoCH"
+
+var ChochFVG[] activeChochFVGs = array.new<ChochFVG>()
+
+// Helper to remove old boxes when exceeding limits
+cleanOldFVGs() =>
+    if array.size(activeChochFVGs) > 60
+        ChochFVG oldest = array.shift(activeChochFVGs)
+        box.delete(oldest.fvgBox)
+
+// Helper to invalidate old Single CHoCH FVGs when Triple CHoCH occurs
+invalidateOldSingleChochFVGs() =>
+    if array.size(activeChochFVGs) > 0
+        for i = 0 to array.size(activeChochFVGs) - 1
+            ChochFVG fvg = array.get(activeChochFVGs, i)
+            if fvg.chochType == "CHoCH" and not fvg.isMitigated
+                fvg.isMitigated := true
+                box.set_bgcolor(fvg.fvgBox, color.new(color.gray, 95))
+
+// ==========================================
+// STATE MACHINE & MOTHER CANDLE TRACKING
+// ==========================================
+
+// Trend state: 0 = Neutral Initialization, 1 = Uptrend, -1 = Downtrend
+var int trend = 0
+
+// Counter for consecutive CHoCH reversals without an intervening BOS
+var int consecutiveChochCount = 0
+
+// Point A: Bar index where last BOS or CHoCH break occurred
+var int pointA_bar = na
+
+// Search flag for valid pullback after Point A
+var bool waitingForPullback = true
+
+// Point C: Confirmed High (Uptrend) or Confirmed Low (Downtrend)
+var float pointC_val = na
+var int   pointC_bar = na
+var bool  pointC_active = false
+
+// Higher Low (HL in Uptrend) / Lower High (LH in Downtrend)
+var float confirmedHL_val = na
+var int   confirmedHL_bar = na
+var bool  confirmedHL_active = false
+
+var float confirmedLH_val = na
+var int   confirmedLH_bar = na
+var bool  confirmedLH_active = false
+
+// Mother Candle (Reference Bar) Boundaries for Inside Bar Filtering
+var float motherHigh = na
+var float motherLow  = na
+
+// Single-event guard per bar (prevents double drawing on same bar)
+var int lastDrawBar = -1
+
+// Dynamic preview lines
+var line activeHighLine = na
+var line activeLowLine  = na
+
+// Initialization at lookback boundary start bar
+if bar_index == startLookbackBar
+    pointA_bar := startLookbackBar
+    pointC_val := high
+    pointC_bar := startLookbackBar
+    confirmedHL_val := low
+    confirmedHL_bar := startLookbackBar
+    confirmedLH_val := high
+    confirmedLH_bar := startLookbackBar
+    motherHigh := high
+    motherLow  := low
+
+// Safety helper to clamp historical bar_index references strictly within lookback window
+safeX1(x1Bar) =>
+    na(x1Bar) ? startLookbackBar : math.max(x1Bar, startLookbackBar)
+
+// Helper functions for finding peak/trough between two bar indices safely
+getHighestPeak(startBar, endBar) =>
+    int sBar = math.max(safeX1(startBar), startLookbackBar)
+    int eBar = safeX1(endBar)
+    int offsetStart = bar_index - sBar
+    int offsetEnd   = bar_index - eBar
+    hVal = high[math.max(0, offsetStart)]
+    hBar = sBar
+    if offsetStart >= 0 and offsetEnd >= 0
+        int minOffset = math.max(0, math.min(offsetStart, offsetEnd))
+        int maxOffset = math.max(0, math.max(offsetStart, offsetEnd))
+        for i = maxOffset to minOffset
+            if high[i] > hVal
+                hVal := high[i]
+                hBar := bar_index - i
+    [hVal, hBar]
+
+getLowestTrough(startBar, endBar) =>
+    int sBar = math.max(safeX1(startBar), startLookbackBar)
+    int eBar = safeX1(endBar)
+    int offsetStart = bar_index - sBar
+    int offsetEnd   = bar_index - eBar
+    lVal = low[math.max(0, offsetStart)]
+    lBar = sBar
+    if offsetStart >= 0 and offsetEnd >= 0
+        int minOffset = math.max(0, math.min(offsetStart, offsetEnd))
+        int maxOffset = math.max(0, math.max(offsetStart, offsetEnd))
+        for i = maxOffset to minOffset
+            if low[i] < lVal
+                lVal := low[i]
+                lBar := bar_index - i
+    [lVal, lBar]
+
+// ==========================================
+// LIQUIDITY POOL TARGETING (TAKE PROFIT - NO MAX RR CAP, MIN 2.5 RR FLOOR)
+// ==========================================
+
+// Helper to find TP for BUY signal: nearest liquidity high >= minTpPrice (uncapped RR)
+findBuyLiquidityTP(entryP, slP, minRRVal) =>
+    float risk = entryP - slP
+    float minTpP = entryP + (risk * minRRVal)
+    float candidate = na
+    
+    // Check active Swing High (Point C) if above minTpP
+    if pointC_active and not na(pointC_val) and pointC_val >= minTpP
+        candidate := pointC_val
+        
+    // Check active Lower High (LH) if above minTpP
+    if confirmedLH_active and not na(confirmedLH_val) and confirmedLH_val >= minTpP
+        candidate := na(candidate) ? confirmedLH_val : math.min(candidate, confirmedLH_val)
+        
+    // Scan all historical peaks across the lookback window for nearest liquidity high >= minTpP
+    int searchRange = math.min(280, bar_index - startLookbackBar)
+    if searchRange >= 5
+        for i = 2 to searchRange - 2
+            if high[i] > high[i+1] and high[i] > high[i-1] and high[i] >= minTpP
+                candidate := na(candidate) ? high[i] : math.min(candidate, high[i])
+
+    float selectedTp = na(candidate) ? minTpP : candidate
+    float rrVal = risk > 0 ? (selectedTp - entryP) / risk : minRRVal
+    [selectedTp, rrVal]
+
+// Helper to find TP for SELL signal: nearest liquidity low <= minTpPrice (uncapped RR)
+findSellLiquidityTP(entryP, slP, minRRVal) =>
+    float risk = slP - entryP
+    float minTpP = entryP - (risk * minRRVal)
+    float candidate = na
+    
+    // Check active Swing Low (Point C) if below minTpP
+    if pointC_active and not na(pointC_val) and pointC_val <= minTpP
+        candidate := pointC_val
+        
+    // Check active Higher Low (HL) if below minTpP
+    if confirmedHL_active and not na(confirmedHL_val) and confirmedHL_val <= minTpP
+        candidate := na(candidate) ? confirmedHL_val : math.max(candidate, confirmedHL_val)
+        
+    // Scan all historical troughs across the lookback window for nearest liquidity low <= minTpP
+    int searchRange = math.min(280, bar_index - startLookbackBar)
+    if searchRange >= 5
+        for i = 2 to searchRange - 2
+            if low[i] < low[i+1] and low[i] < low[i-1] and low[i] <= minTpP
+                candidate := na(candidate) ? low[i] : math.max(candidate, low[i])
+
+    float selectedTp = na(candidate) ? minTpP : candidate
+    float rrVal = risk > 0 ? (entryP - selectedTp) / risk : minRRVal
+    [selectedTp, rrVal]
+
+// Event flags for alerts
+var bool eventBullBOS        = false
+var bool eventBearBOS        = false
+var bool eventBullCHoCH      = false
+var bool eventBearCHoCH      = false
+var bool eventBullDualCHoCH  = false
+var bool eventBearDualCHoCH  = false
+var bool eventBullTripleCHoCH= false
+var bool eventBearTripleCHoCH= false
+var bool eventBullPullback   = false
+var bool eventBearPullback   = false
+var bool eventBuySignal      = false
+var bool eventSellSignal     = false
+
+eventBullBOS        := false
+eventBearBOS        := false
+eventBullCHoCH      := false
+eventBearCHoCH      := false
+eventBullDualCHoCH  := false
+eventBearDualCHoCH  := false
+eventBullTripleCHoCH:= false
+eventBearTripleCHoCH:= false
+eventBullPullback   := false
+eventBearPullback   := false
+eventBuySignal      := false
+eventSellSignal     := false
+
+// ==========================================
+// CANDLESTICK PATTERN DETECTION HELPERS
+// ==========================================
+
+// Bullish Engulfing (Relaxed): 2nd candle is green (close > open) and high > high[1]
+isBullEngulfing() =>
+    (close > open) and (high > high[1])
+
+// Bearish Engulfing (Relaxed): 2nd candle is red (close < open) and low < low[1]
+isBearEngulfing() =>
+    (close < open) and (low < low[1])
+
+// Morning Star (Relaxed): 1st candle is red, 2nd candle any body/wick, 3rd candle is green
+isMorningStar() =>
+    (close[2] < open[2]) and (close > open)
+
+// Evening Star (Relaxed): 1st candle is green, 2nd candle any body/wick, 3rd candle is red
+isEveningStar() =>
+    (close[2] > open[2]) and (close < open)
+
+// ==========================================
+// CORE MARKET STRUCTURE LOGIC (VALID PULLBACK)
+// ==========================================
+
+if inLookbackWindow
+
+    // 1. INSIDE BAR (INNER CANDLE) CHECK
+    bool isInsideBar = false
+    if not na(motherHigh) and not na(motherLow)
+        isInsideBar := (high <= motherHigh) and (low >= motherLow)
+
+    // Pullback triggers (must NOT be an inside bar)
+    bool validBearPullback = false // Valid pullback in Uptrend (breaks low of mother bar)
+    bool validBullPullback = false // Valid pullback in Downtrend (breaks high of mother bar)
+
+    if not isInsideBar
+        if not na(motherLow) and low < motherLow
+            validBearPullback := true
+        if not na(motherHigh) and high > motherHigh
+            validBullPullback := true
+
+    // ------------------------------------------
+    // 2. NEUTRAL INITIALIZATION AT LOOKBACK BOUNDARY
+    // ------------------------------------------
+    if trend == 0
+        int recentStart = math.max(startLookbackBar, bar_index - 30)
+        if validBearPullback
+            [hVal, hBar] = getHighestPeak(recentStart, bar_index)
+            pointC_val := hVal
+            pointC_bar := hBar
+            pointC_active := true
+            trend := 1
+            waitingForPullback := false
+            pointA_bar := bar_index
+            motherHigh := high
+            motherLow  := low
+        else if validBullPullback
+            [lVal, lBar] = getLowestTrough(recentStart, bar_index)
+            pointC_val := lVal
+            pointC_bar := lBar
+            pointC_active := true
+            trend := -1
+            waitingForPullback := false
+            pointA_bar := bar_index
+            motherHigh := high
+            motherLow  := low
+        else if not isInsideBar
+            motherHigh := high
+            motherLow  := low
+
+    // ------------------------------------------
+    // 3. SEARCH FOR POINT C (VALID PULLBACK AFTER BOS / CHOCH)
+    // ------------------------------------------
+    if trend != 0 and waitingForPullback and not na(pointA_bar)
+        if trend == 1 and validBearPullback
+            [peakVal, peakBar] = getHighestPeak(pointA_bar, bar_index)
+            pointC_val := peakVal
+            pointC_bar := peakBar
+            pointC_active := true
+            waitingForPullback := false
+            eventBearPullback := true
+
+        else if trend == -1 and validBullPullback
+            [troughVal, troughBar] = getLowestTrough(pointA_bar, bar_index)
+            pointC_val := troughVal
+            pointC_bar := troughBar
+            pointC_active := true
+            waitingForPullback := false
+            eventBullPullback := true
+
+    // ------------------------------------------
+    // 4. CHOCH EVALUATION (SINGLE / DUAL / TRIPLE CHOCH)
+    // ------------------------------------------
+
+    // Bearish CHoCH: In Uptrend, low (wick) or close breaches confirmed Higher Low (HL)
+    float breakValueBearChoch = useWickBreak ? low : close
+    if trend == 1 and confirmedHL_active and not na(confirmedHL_val) and breakValueBearChoch < confirmedHL_val
+        confirmedHL_active := false
+        trend := -1 // Shift to Downtrend
+        consecutiveChochCount := consecutiveChochCount + 1
+        lastDrawBar := bar_index
+
+        // Establish Lower High (LH) for the new Downtrend from highest peak in CHoCH leg
+        [lhPeakVal, lhPeakBar] = getHighestPeak(confirmedHL_bar, bar_index)
+        confirmedLH_val := lhPeakVal
+        confirmedLH_bar := lhPeakBar
+        confirmedLH_active := true
+
+        // Determine event type, label text, and color based on consecutive CHoCH count
+        string chochLabelText = "CHoCH"
+        color chochDrawCol    = bearColor
+        bool shouldDraw       = false
+
+        if consecutiveChochCount == 1
+            chochLabelText := "CHoCH"
+            chochDrawCol   := bearColor
+            shouldDraw     := showCHoCH
+            eventBearCHoCH := true
+        else if consecutiveChochCount == 2
+            chochLabelText := "Dual CHoCH"
+            chochDrawCol   := dualChochCol
+            shouldDraw     := showDualCHoCH
+            eventBearDualCHoCH := true
+        else
+            chochLabelText := "Triple CHoCH"
+            chochDrawCol   := tripleChochCol
+            shouldDraw     := showTripleCHoCH
+            eventBearTripleCHoCH := true
+            invalidateOldSingleChochFVGs()
+
+        if shouldDraw
+            int x1_safe = safeX1(confirmedHL_bar)
+            string ttBearChoch = "Event: Bearish " + chochLabelText + "\nTrend: Shift to Downtrend (-1)\nConsecutive Count: " + str.tostring(consecutiveChochCount) + "\nBroken HL Price: " + str.tostring(confirmedHL_val) + "\nBar Index: " + str.tostring(bar_index)
+            line.new(x1=x1_safe, y1=confirmedHL_val, x2=bar_index, y2=confirmedHL_val, color=chochDrawCol, width=1, style=lineStyle)
+            label.new(x=math.round(math.avg(x1_safe, bar_index)), y=confirmedHL_val, text=chochLabelText, color=color.new(chochDrawCol, 100), textcolor=chochDrawCol, style=label.style_label_down, size=textSize, tooltip=ttBearChoch)
+
+        // SCAN & DETECT BEARISH FVG(S) IN SINGLE CHOCH (count==1) AND TRIPLE CHOCH (count>=3) LEGS ONLY (SKIP DUAL CHOCH count==2)
+        if showCHochFVG and not na(confirmedHL_bar) and consecutiveChochCount != 2
+            int legStartBar = math.max(safeX1(confirmedHL_bar), startLookbackBar)
+            if legStartBar + 2 <= bar_index
+                for bIdx = legStartBar + 2 to bar_index
+                    int offsetCurrent = bar_index - bIdx
+                    int offsetMiddle  = offsetCurrent + 1
+                    int offsetFirst   = offsetCurrent + 2
+
+                    if offsetCurrent >= 0 and offsetFirst >= 0 and (bar_index - offsetFirst) >= startLookbackBar
+                        float fvgTop    = low[offsetFirst]
+                        float fvgBottom = high[offsetCurrent]
+
+                        if fvgBottom < fvgTop
+                            // FRESHNESS CHECK: Verify if price tapped/mitigated fvgBottom at ANY bar between bIdx+1 and current bar_index
+                            bool isFresh = true
+                            if bIdx < bar_index
+                                for kBar = bIdx + 1 to bar_index
+                                    int kOffset = bar_index - kBar
+                                    if kOffset >= 0 and high[kOffset] >= fvgBottom
+                                        isFresh := false
+                                        break
+
+                            if isFresh
+                                int fvgStartBar = bar_index - offsetMiddle
+                                box b = box.new(left=fvgStartBar, top=fvgTop, right=bar_index + 10, bottom=fvgBottom, bgcolor=bearFvgColor, border_color=bearColor, border_style=line.style_dashed)
+                                array.push(activeChochFVGs, ChochFVG.new(b, fvgTop, fvgBottom, false, fvgStartBar, bar_index, false, false, chochLabelText))
+                                cleanOldFVGs()
+
+        pointC_active := false
+        pointA_bar := bar_index
+        waitingForPullback := true
+        motherHigh := high
+        motherLow  := low
+
+    // Bullish CHoCH: In Downtrend, high (wick) or close breaches confirmed Lower High (LH)
+    float breakValueBullChoch = useWickBreak ? high : close
+    if trend == -1 and confirmedLH_active and not na(confirmedLH_val) and breakValueBullChoch > confirmedLH_val
+        confirmedLH_active := false
+        trend := 1 // Shift to Uptrend
+        consecutiveChochCount := consecutiveChochCount + 1
+        lastDrawBar := bar_index
+
+        // Establish Higher Low (HL) for the new Uptrend from lowest trough in CHoCH leg
+        [hlTroughVal, hlTroughBar] = getLowestTrough(confirmedLH_bar, bar_index)
+        confirmedHL_val := hlTroughVal
+        confirmedHL_bar := hlTroughBar
+        confirmedHL_active := true
+
+        // Determine event type, label text, and color based on consecutive CHoCH count
+        string chochLabelText = "CHoCH"
+        color chochDrawCol    = bullColor
+        bool shouldDraw       = false
+
+        if consecutiveChochCount == 1
+            chochLabelText := "CHoCH"
+            chochDrawCol   := bullColor
+            shouldDraw     := showCHoCH
+            eventBullCHoCH := true
+        else if consecutiveChochCount == 2
+            chochLabelText := "Dual CHoCH"
+            chochDrawCol   := dualChochCol
+            shouldDraw     := showDualCHoCH
+            eventBullDualCHoCH := true
+        else
+            chochLabelText := "Triple CHoCH"
+            chochDrawCol   := tripleChochCol
+            shouldDraw     := showTripleCHoCH
+            eventBullTripleCHoCH := true
+            invalidateOldSingleChochFVGs()
+
+        if shouldDraw
+            int x1_safe = safeX1(confirmedLH_bar)
+            string ttBullChoch = "Event: Bullish " + chochLabelText + "\nTrend: Shift to Uptrend (+1)\nConsecutive Count: " + str.tostring(consecutiveChochCount) + "\nBroken LH Price: " + str.tostring(confirmedLH_val) + "\nBar Index: " + str.tostring(bar_index)
+            line.new(x1=x1_safe, y1=confirmedLH_val, x2=bar_index, y2=confirmedLH_val, color=chochDrawCol, width=1, style=lineStyle)
+            label.new(x=math.round(math.avg(x1_safe, bar_index)), y=confirmedLH_val, text=chochLabelText, color=color.new(chochDrawCol, 100), textcolor=chochDrawCol, style=label.style_label_down, size=textSize, tooltip=ttBullChoch)
+
+        // SCAN & DETECT BULLISH FVG(S) IN SINGLE CHOCH (count==1) AND TRIPLE CHOCH (count>=3) LEGS ONLY (SKIP DUAL CHOCH count==2)
+        if showCHochFVG and not na(confirmedLH_bar) and consecutiveChochCount != 2
+            int legStartBar = math.max(safeX1(confirmedLH_bar), startLookbackBar)
+            if legStartBar + 2 <= bar_index
+                for bIdx = legStartBar + 2 to bar_index
+                    int offsetCurrent = bar_index - bIdx
+                    int offsetMiddle  = offsetCurrent + 1
+                    int offsetFirst   = offsetCurrent + 2
+
+                    if offsetCurrent >= 0 and offsetFirst >= 0 and (bar_index - offsetFirst) >= startLookbackBar
+                        float fvgTop    = low[offsetCurrent]
+                        float fvgBottom = high[offsetFirst]
+
+                        if fvgTop > fvgBottom
+                            // FRESHNESS CHECK: Verify if price tapped/mitigated fvgTop at ANY bar between bIdx+1 and current bar_index
+                            bool isFresh = true
+                            if bIdx < bar_index
+                                for kBar = bIdx + 1 to bar_index
+                                    int kOffset = bar_index - kBar
+                                    if kOffset >= 0 and low[kOffset] <= fvgTop
+                                        isFresh := false
+                                        break
+
+                            if isFresh
+                                int fvgStartBar = bar_index - offsetMiddle
+                                box b = box.new(left=fvgStartBar, top=fvgTop, right=bar_index + 10, bottom=fvgBottom, bgcolor=bullFvgColor, border_color=bullColor, border_style=line.style_dashed)
+                                array.push(activeChochFVGs, ChochFVG.new(b, fvgTop, fvgBottom, true, fvgStartBar, bar_index, false, false, chochLabelText))
+                                cleanOldFVGs()
+
+        pointC_active := false
+        pointA_bar := bar_index
+        waitingForPullback := true
+        motherHigh := high
+        motherLow  := low
+
+    // ------------------------------------------
+    // 5. BOS EVALUATION (BREAK OF POINT C)
+    // ------------------------------------------
+
+    // Bullish BOS: Price high (wick) or close exceeds Point C (Confirmed Swing High)
+    float breakValueBullBOS = useWickBreak ? high : close
+    if trend == 1 and pointC_active and not na(pointC_val) and breakValueBullBOS > pointC_val and lastDrawBar != bar_index
+        pointC_active := false
+        eventBullBOS  := true
+        lastDrawBar   := bar_index
+        consecutiveChochCount := 0 // Valid BOS resets consecutive CHoCH counter
+
+        if showBOS
+            int x1_safe = safeX1(pointC_bar)
+            string ttBullBOS = "Event: Bullish BOS\nTrend: Uptrend (+1)\nBroken Point C Price: " + str.tostring(pointC_val) + "\nBar Index: " + str.tostring(bar_index)
+            line.new(x1=x1_safe, y1=pointC_val, x2=bar_index, y2=pointC_val, color=bullColor, width=1, style=lineStyle)
+            label.new(x=math.round(math.avg(x1_safe, bar_index)), y=pointC_val, text="BOS", color=color.new(bullColor, 100), textcolor=bullColor, style=label.style_label_down, size=textSize, tooltip=ttBullBOS)
+
+        [hlVal, hlBar] = getLowestTrough(pointC_bar, bar_index)
+        confirmedHL_val := hlVal
+        confirmedHL_bar := hlBar
+        confirmedHL_active := true
+
+        pointA_bar := bar_index
+        waitingForPullback := true
+        motherHigh := high
+        motherLow  := low
+
+    // Bearish BOS: Price low (wick) or close drops below Point C (Confirmed Swing Low)
+    float breakValueBearBOS = useWickBreak ? low : close
+    if trend == -1 and pointC_active and not na(pointC_val) and breakValueBearBOS < pointC_val and lastDrawBar != bar_index
+        pointC_active := false
+        eventBearBOS  := true
+        lastDrawBar   := bar_index
+        consecutiveChochCount := 0 // Valid BOS resets consecutive CHoCH counter
+
+        if showBOS
+            int x1_safe = safeX1(pointC_bar)
+            string ttBearBOS = "Event: Bearish BOS\nTrend: Downtrend (-1)\nBroken Point C Price: " + str.tostring(pointC_val) + "\nBar Index: " + str.tostring(bar_index)
+            line.new(x1=x1_safe, y1=pointC_val, x2=bar_index, y2=pointC_val, color=bearColor, width=1, style=lineStyle)
+            label.new(x=math.round(math.avg(x1_safe, bar_index)), y=pointC_val, text="BOS", color=color.new(bearColor, 100), textcolor=bearColor, style=label.style_label_down, size=textSize, tooltip=ttBearBOS)
+
+        [lhVal, lhBar] = getHighestPeak(pointC_bar, bar_index)
+        confirmedLH_val := lhVal
+        confirmedLH_bar := lhBar
+        confirmedLH_active := true
+
+        pointA_bar := bar_index
+        waitingForPullback := true
+        motherHigh := high
+        motherLow  := low
+
+    // ------------------------------------------
+    // 6. UPDATE MOTHER BAR BOUNDARIES IF NOT INSIDE BAR
+    // ------------------------------------------
+    if not isInsideBar
+        motherHigh := high
+        motherLow  := low
+
+    // ------------------------------------------
+    // 7. RENDER DYNAMIC ACTIVE STRUCTURE LEVELS
+    // ------------------------------------------
+    if showActiveSwings
+        if trend == 1
+            if pointC_active and not na(pointC_val)
+                line.delete(activeHighLine)
+                int x1_safe = safeX1(pointC_bar)
+                activeHighLine := line.new(x1=x1_safe, y1=pointC_val, x2=bar_index + 2, y2=pointC_val, color=swingHighCol, width=1, style=line.style_dashed)
+            if confirmedHL_active and not na(confirmedHL_val)
+                line.delete(activeLowLine)
+                int x1_safe = safeX1(confirmedHL_bar)
+                activeLowLine := line.new(x1=x1_safe, y1=confirmedHL_val, x2=bar_index + 2, y2=confirmedHL_val, color=swingLowCol, width=1, style=line.style_dashed)
+        else if trend == -1
+            if pointC_active and not na(pointC_val)
+                line.delete(activeLowLine)
+                int x1_safe = safeX1(pointC_bar)
+                activeLowLine := line.new(x1=x1_safe, y1=pointC_val, x2=bar_index + 2, y2=pointC_val, color=swingLowCol, width=1, style=line.style_dashed)
+            if confirmedLH_active and not na(confirmedLH_val)
+                line.delete(activeHighLine)
+                int x1_safe = safeX1(pointC_bar)
+                activeHighLine := line.new(x1=x1_safe, y1=pointC_val, x2=bar_index + 2, y2=pointC_val, color=swingHighCol, width=1, style=line.style_dashed)
+
+    // ------------------------------------------
+    // 8. FVG RE-TEST, CANDLESTICK REVERSAL SIGNALS, PROPORTIONAL SL & TP (100% FRESH FVG ONLY)
+    // ------------------------------------------
+    if array.size(activeChochFVGs) > 0
+        for i = array.size(activeChochFVGs) - 1 to 0
+            ChochFVG fvg = array.get(activeChochFVGs, i)
+
+            // Signal & Mitigation evaluation ONLY if FVG is NOT mitigated and current bar is AFTER CHoCH confirmation bar
+            if not fvg.isMitigated and bar_index > fvg.chochBar
+                // If a Triple CHoCH state is active (consecutiveChochCount >= 3), ignore/mitigate old Single CHoCH FVGs
+                if consecutiveChochCount >= 3 and fvg.chochType == "CHoCH"
+                    fvg.isMitigated := true
+                    box.set_bgcolor(fvg.fvgBox, color.new(color.gray, 95))
+                else
+                    box.set_right(fvg.fvgBox, bar_index + 2)
+
+                // Check touch status across current and pattern candles (0, 1, and 2 bars back) AFTER CHoCH
+                bool c0Touch = (low[0] <= fvg.top) and (high[0] >= fvg.bottom)
+                bool c1Touch = (bar_index - 1 > fvg.chochBar) and (low[1] <= fvg.top) and (high[1] >= fvg.bottom)
+                bool c2Touch = (bar_index - 2 > fvg.chochBar) and (low[2] <= fvg.top) and (high[2] >= fvg.bottom)
+                bool anyTouch = c0Touch or c1Touch or c2Touch
+
+                if anyTouch
+                    bool patternMatched = false
+
+                    if showReversalSignals and not fvg.signalFired
+                        if fvg.isBullish
+                            bool bEngulfing = isBullEngulfing()
+                            bool mStar      = isMorningStar()
+
+                            bool validBullEng = bEngulfing and (c0Touch or c1Touch)
+                            bool validMStar   = mStar and (c0Touch or c1Touch or c2Touch)
+
+                            if validBullEng or validMStar
+                                patternMatched  := true
+                                fvg.signalFired := true
+                                fvg.isMitigated := true
+                                eventBuySignal  := true
+                                string patName  = validBullEng ? "Bullish Engulfing" : "Morning Star"
+                                int patternStartBar = bar_index - (validMStar ? 2 : 1)
+
+                                // 1. Stop Loss: Bullish Engulfing = min(low[0], low[1]), Morning Star = low[1] (2nd candle low)
+                                float slPrice = validBullEng ? math.min(low[0], low[1]) : low[1]
+
+                                // 2. Calculate Take Profit targeting nearest Liquidity Pool >= minRR (2.5+ RR floor, no upper RR cap!)
+                                float entryPrice = close
+                                [tpPrice, rrRatio] = findBuyLiquidityTP(entryPrice, slPrice, minRR)
+
+                                // Formatted strings
+                                string slStr = str.tostring(slPrice)
+                                string tpStr = str.tostring(tpPrice)
+                                string rrStr = str.tostring(rrRatio, "#.#")
+
+                                // Main Signal Label directly on candlestick
+                                string ttSignal = "Signal: BUY (" + patName + ")\nTP: " + tpStr + " (" + rrStr + " RR)\nSL: " + slStr + "\nOrigin: " + fvg.chochType + " Leg FVG\nBar Index: " + str.tostring(bar_index)
+                                label.new(x=bar_index, y=low, text="BUY\n" + patName + "\nTP: " + tpStr + " (" + rrStr + " RR)\nSL: " + slStr, style=label.style_label_up, color=bullColor, textcolor=color.white, size=textSize, tooltip=ttSignal)
+
+                                // Plot Stop Loss line and right-side SL label
+                                if showSlLines
+                                    line.new(x1=patternStartBar, y1=slPrice, x2=bar_index + 12, y2=slPrice, color=color.new(color.red, 20), width=1, style=line.style_dotted)
+                                    label.new(x=bar_index + 12, y=slPrice, text="SL: " + slStr, style=label.style_label_left, color=color.red, textcolor=color.white, size=textSize)
+
+                                // Plot Take Profit line and right-side TP label
+                                if showTpLines
+                                    line.new(x1=patternStartBar, y1=tpPrice, x2=bar_index + 12, y2=tpPrice, color=color.new(color.green, 20), width=1, style=line.style_dotted)
+                                    label.new(x=bar_index + 12, y=tpPrice, text="TP: " + tpStr + " (" + rrStr + " RR)", style=label.style_label_left, color=color.green, textcolor=color.white, size=textSize)
+
+                        else
+                            bool bearEngulfing = isBearEngulfing()
+                            bool eStar         = isEveningStar()
+
+                            bool validBearEng = bearEngulfing and (c0Touch or c1Touch)
+                            bool validEStar   = eStar and (c0Touch or c1Touch or c2Touch)
+
+                            if validBearEng or validEStar
+                                patternMatched  := true
+                                fvg.signalFired := true
+                                fvg.isMitigated := true
+                                eventSellSignal := true
+                                string patName  = validBearEng ? "Bearish Engulfing" : "Evening Star"
+                                int patternStartBar = bar_index - (validEStar ? 2 : 1)
+
+                                // 1. Stop Loss: Bearish Engulfing = max(high[0], high[1]), Evening Star = high[1] (2nd candle high)
+                                float slPrice = validBearEng ? math.max(high[0], high[1]) : high[1]
+
+                                // 2. Calculate Take Profit targeting nearest Liquidity Pool >= minRR (2.5+ RR floor, no upper RR cap!)
+                                float entryPrice = close
+                                [tpPrice, rrRatio] = findSellLiquidityTP(entryPrice, slPrice, minRR)
+
+                                // Formatted strings
+                                string slStr = str.tostring(slPrice)
+                                string tpStr = str.tostring(tpPrice)
+                                string rrStr = str.tostring(rrRatio, "#.#")
+
+                                // Main Signal Label directly on candlestick
+                                string ttSignal = "Signal: SELL (" + patName + ")\nTP: " + tpStr + " (" + rrStr + " RR)\nSL: " + slStr + "\nOrigin: " + fvg.chochType + " Leg FVG\nBar Index: " + str.tostring(bar_index)
+                                label.new(x=bar_index, y=high, text="SELL\n" + patName + "\nTP: " + tpStr + " (" + rrStr + " RR)\nSL: " + slStr, style=label.style_label_down, color=bearColor, textcolor=color.white, size=textSize, tooltip=ttSignal)
+
+                                // Plot Stop Loss line and right-side SL label
+                                if showSlLines
+                                    line.new(x1=patternStartBar, y1=slPrice, x2=bar_index + 12, y2=slPrice, color=color.new(color.red, 20), width=1, style=line.style_dotted)
+                                    label.new(x=bar_index + 12, y=slPrice, text="SL: " + slStr, style=label.style_label_left, color=color.red, textcolor=color.white, size=textSize)
+
+                                // Plot Take Profit line and right-side TP label
+                                if showTpLines
+                                    line.new(x1=patternStartBar, y1=tpPrice, x2=bar_index + 12, y2=tpPrice, color=color.new(color.green, 20), width=1, style=line.style_dotted)
+                                    label.new(x=bar_index + 12, y=tpPrice, text="TP: " + tpStr + " (" + rrStr + " RR)", style=label.style_label_left, color=color.green, textcolor=color.white, size=textSize)
+
+                    // Mark FVG mitigated if pattern matched, or if breached/touch window expired
+                    if patternMatched
+                        box.set_bgcolor(fvg.fvgBox, color.new(color.gray, 92))
+                    else
+                        bool breached = fvg.isBullish ? (low < fvg.bottom) : (high > fvg.top)
+                        bool touchExpired = c2Touch and not c1Touch and not c0Touch
+                        if breached or touchExpired
+                            fvg.isMitigated := true
+                            box.set_bgcolor(fvg.fvgBox, color.new(color.gray, 92))
+
+// ==========================================
+// VISUAL SHAPES & ALERTS
+// ==========================================
+
+// Plot shape for valid pullbacks if enabled
+plotshape(inLookbackWindow and showRetracementShapes and eventBearPullback, title="Valid Bearish Pullback", style=shape.labeldown, location=location.abovebar, color=bearColor, text="PB", textcolor=color.white, size=size.tiny)
+plotshape(inLookbackWindow and showRetracementShapes and eventBullPullback, title="Valid Bullish Pullback", style=shape.labelup, location=location.belowbar, color=bullColor, text="PB", textcolor=color.white, size=size.tiny)
+
+// Alert conditions
+alertcondition(eventBullBOS, title="Bullish BOS", message="Bullish Break of Structure (BOS) detected on {{interval}} chart.")
+alertcondition(eventBearBOS, title="Bearish BOS", message="Bearish Break of Structure (BOS) detected on {{interval}} chart.")
+alertcondition(eventBullCHoCH, title="Bullish CHoCH", message="Bullish Change of Character (CHoCH) detected on {{interval}} chart.")
+alertcondition(eventBearCHoCH, title="Bearish CHoCH", message="Bearish Change of Character (CHoCH) detected on {{interval}} chart.")
+alertcondition(eventBullDualCHoCH, title="Bullish Dual CHoCH", message="Bullish Dual CHoCH detected on {{interval}} chart.")
+alertcondition(eventBearDualCHoCH, title="Bearish Dual CHoCH", message="Bearish Dual CHoCH detected on {{interval}} chart.")
+alertcondition(eventBullTripleCHoCH, title="Bullish Triple CHoCH", message="Bullish Triple CHoCH detected on {{interval}} chart.")
+alertcondition(eventBearTripleCHoCH, title="Bearish Triple CHoCH", message="Bearish Triple CHoCH detected on {{interval}} chart.")
+alertcondition(eventBearPullback, title="Valid Bearish Pullback", message="Valid Bearish Pullback confirmed on {{interval}} chart.")
+alertcondition(eventBullPullback, title="Valid Bullish Pullback", message="Valid Bullish Pullback confirmed on {{interval}} chart.")
+alertcondition(eventBuySignal, title="CHoCH FVG BUY Signal", message="Bullish Reversal Pattern (BUY Signal) detected inside FRESH CHoCH / Triple CHoCH FVG on {{interval}} chart.")
+alertcondition(eventSellSignal, title="CHoCH FVG SELL Signal", message="Bearish Reversal Pattern (SELL Signal) detected inside FRESH CHoCH / Triple CHoCH FVG on {{interval}} chart.")

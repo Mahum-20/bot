@@ -1,0 +1,41 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+venv/
+env/
+ENV/
+
+# Sensitive database & key files
+*.db
+*.key
+bot_vault.db
+vault.db
+vault.key
+*.pem
+
+# Log files
+*.log
+bot_stdout.log
+bot_stderr.log
+
+# Archive files
+*.zip
+*.tar.gz
+
+# Historical Candle Data & Cache (Large JSON / CSV files)
+data/
+*.csv
+
+# Scratch & Gemini Assistant artifacts
+scratch/
+.gemini/
+
+# OS and Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

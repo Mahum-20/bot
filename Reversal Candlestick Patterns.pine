@@ -1,0 +1,137 @@
+//@version=5
+indicator("Reversal Candlestick Patterns [Engulfing & Stars]", overlay = true, max_labels_count = 500, max_bars_back = 5000)
+
+// ==============================================================================
+// 1. INPUT SETTINGS & CONFIGURATION
+// ==============================================================================
+grp_history    = "Historical Horizon"
+lookbackBars   = input.int(5000, "Lookback Candles", minval = 100, maxval = 20000, step = 500, group = grp_history, tooltip = "Number of historical candles to scan and mark (up to 5,000+).")
+
+grp_patterns   = "Pattern Visibility"
+showBullEngulf = input.bool(true,  "Bullish Engulfing", group = grp_patterns)
+showBearEngulf = input.bool(true,  "Bearish Engulfing", group = grp_patterns)
+showMornStar   = input.bool(true,  "Morning Star",       group = grp_patterns)
+showEveStar    = input.bool(true,  "Evening Star",       group = grp_patterns)
+
+grp_logic  = "Pattern Criteria & Strictness"
+modeStrict = input.string("Algorithmic (Bot Match)", "Engulfing Criteria", options = ["Algorithmic (Bot Match)", "Classic (Body Only)"], group = grp_logic)
+starRatio  = input.float(0.55, "Star Max Body Ratio", minval = 0.1, maxval = 0.9, step = 0.05, group = grp_logic)
+
+grp_visuals = "Visuals & Styling"
+colorBars   = input.bool(false, "Highlight Candlesticks", group = grp_visuals)
+bullCol     = input.color(#089981, "Bullish Color", group = grp_visuals)
+bearCol     = input.color(#f23645, "Bearish Color", group = grp_visuals)
+
+// ==============================================================================
+// 2. CANDLE DEFINITIONS & DIMENSIONS
+// ==============================================================================
+c_open  = open
+c_high  = high
+c_low   = low
+c_close = close
+
+// Current Bar [0]
+body0   = math.abs(c_close - c_open)
+isBull0 = c_close > c_open
+isBear0 = c_close < c_open
+
+// Prior Bar [1]
+body1   = math.abs(open[1] - close[1])
+isBull1 = close[1] >= open[1]
+isBear1 = close[1] <= open[1]
+
+// Two Bars Ago [2]
+body2   = math.abs(open[2] - close[2])
+isBull2 = close[2] >= open[2]
+isBear2 = close[2] <= open[2]
+
+// Check if within user requested lookback range (e.g. last 5,000 bars)
+inLookback = (last_bar_index - bar_index) <= lookbackBars
+
+// ==============================================================================
+// 3. PATTERN DETECTION LOGIC (MATCHES PYTHON BOT ENGINE 100%)
+// ==============================================================================
+
+// --- A. Bullish Engulfing ---
+bool isBullEngulf = false
+if isBear1 and isBull0 and inLookback
+    if modeStrict == "Algorithmic (Bot Match)"
+        // Python engine: c2 wicks above c1 high AND closes at/above c1 open
+        isBullEngulf := (high > high[1]) and (close >= open[1])
+    else
+        // Classic: body completely engulfs prior body
+        isBullEngulf := (open <= close[1]) and (close >= open[1])
+
+// --- B. Bearish Engulfing ---
+bool isBearEngulf = false
+if isBull1 and isBear0 and inLookback
+    if modeStrict == "Algorithmic (Bot Match)"
+        // Python engine: c2 wicks below c1 low AND closes at/below c1 open
+        isBearEngulf := (low < low[1]) and (close <= open[1])
+    else
+        // Classic: body completely engulfs prior body
+        isBearEngulf := (open >= close[1]) and (close <= open[1])
+
+// --- C. Morning Star ---
+// bar[2] = Large Bearish candle
+// bar[1] = Small Star candle (body <= starRatio of bar[2] body)
+// bar[0] = Bullish candle closing above midpoint of bar[2] body
+bool isMornStar = false
+if isBear2 and (body2 > 0) and inLookback
+    bool starCondition = (body1 <= (starRatio * body2))
+    float c2_midpoint  = close[2] + (0.5 * body2)
+    isMornStar := starCondition and isBull0 and (close >= c2_midpoint)
+
+// --- D. Evening Star ---
+// bar[2] = Large Bullish candle
+// bar[1] = Small Star candle (body <= starRatio of bar[2] body)
+// bar[0] = Bearish candle closing below midpoint of bar[2] body
+bool isEveStar = false
+if isBull2 and (body2 > 0) and inLookback
+    bool starCondition = (body1 <= (starRatio * body2))
+    float c2_midpoint  = open[2] + (0.5 * body2)
+    isEveStar := starCondition and isBear0 and (close <= c2_midpoint)
+
+// Exclude double trigger (Star takes precedence over Engulfing on same bar)
+if isMornStar and isBullEngulf
+    isBullEngulf := false
+if isEveStar and isBearEngulf
+    isBearEngulf := false
+
+// ==============================================================================
+// 4. CHART DRAWINGS USING PLOTSHAPE (SUPPORTS 5,000+ CANDLES WITHOUT 500-LIMIT)
+// ==============================================================================
+// In TradingView, label.new() has a strict hard limit of 500 objects total.
+// plotshape() has NO object limit and displays across all 5,000+ candles seamlessly!
+
+// 1. Morning Star (Green Star Label Below Bar)
+plotshape(showMornStar and isMornStar, title = "Morning Star", style = shape.labelup, location = location.belowbar, color = bullCol, text = "⭐ M.Star", textcolor = color.white, size = size.normal)
+
+// 2. Bullish Engulfing (Green Triangle & Text Below Bar)
+plotshape(showBullEngulf and isBullEngulf, title = "Bullish Engulfing", style = shape.triangleup, location = location.belowbar, color = bullCol, text = "Bull. Engulf", textcolor = bullCol, size = size.small)
+
+// 3. Evening Star (Red Star Label Above Bar)
+plotshape(showEveStar and isEveStar, title = "Evening Star", style = shape.labeldown, location = location.abovebar, color = bearCol, text = "⭐ E.Star", textcolor = color.white, size = size.normal)
+
+// 4. Bearish Engulfing (Red Triangle & Text Above Bar)
+plotshape(showBearEngulf and isBearEngulf, title = "Bearish Engulfing", style = shape.triangledown, location = location.abovebar, color = bearCol, text = "Bear. Engulf", textcolor = bearCol, size = size.small)
+
+// Optional Bar Coloring
+color barHighlight = na
+if colorBars
+    if isMornStar or isBullEngulf
+        barHighlight := bullCol
+    else if isEveStar or isBearEngulf
+        barHighlight := bearCol
+barcolor(barHighlight)
+
+// ==============================================================================
+// 5. TRADINGVIEW ALERTS
+// ==============================================================================
+alertcondition(isBullEngulf, title = "Bullish Engulfing Alert", message = "Bullish Engulfing confirmed on {{ticker}} ({{interval}})")
+alertcondition(isBearEngulf, title = "Bearish Engulfing Alert", message = "Bearish Engulfing confirmed on {{ticker}} ({{interval}})")
+alertcondition(isMornStar,   title = "Morning Star Alert",     message = "Morning Star confirmed on {{ticker}} ({{interval}})")
+alertcondition(isEveStar,    title = "Evening Star Alert",    message = "Evening Star confirmed on {{ticker}} ({{interval}})")
+
+alertcondition(isBullEngulf or isMornStar, title = "Any Bullish Reversal", message = "Bullish Reversal Pattern confirmed on {{ticker}} ({{interval}})")
+alertcondition(isBearEngulf or isEveStar,  title = "Any Bearish Reversal", message = "Bearish Reversal Pattern confirmed on {{ticker}} ({{interval}})")

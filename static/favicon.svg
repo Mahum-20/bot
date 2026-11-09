@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="mqGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+  </defs>
+  <!-- Minimalist Institutional Frame -->
+  <rect width="64" height="64" rx="14" fill="#0f172a" />
+  
+  <!-- Clean Precision 'M' Monogram -->
+  <path d="M17 45 V20 L32 33 L47 20 V45" 
+        fill="none" 
+        stroke="url(#mqGrad)" 
+        stroke-width="5.5" 
+        stroke-linecap="round" 
+        stroke-linejoin="round" />
+        
+  <!-- Quant Precision Dot -->
+  <circle cx="32" cy="44" r="2.8" fill="#60a5fa" />
+</svg>

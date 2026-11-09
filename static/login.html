@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meyhem Quant | Terminal Sign In</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-page-body">
+    <!-- Topbar Actions -->
+    <div class="login-topbar-actions">
+        <button id="theme-toggle-btn" class="login-theme-btn" title="Toggle Theme">
+            <span id="theme-btn-text">Dark Theme</span>
+        </button>
+    </div>
+
+    <!-- Login Card -->
+    <main class="login-card">
+        <div class="login-header">
+            <div class="login-logo">
+                <img src="/static/favicon.svg" alt="Meyhem Quant Logo" width="32" height="32">
+            </div>
+            <h2>Meyhem Quant</h2>
+            <p>Institutional Trading & Risk Terminal</p>
+        </div>
+
+        <div id="login-error" class="login-error" role="alert"></div>
+
+        <form id="login-form" style="display: flex; flex-direction: column; gap: 16px;">
+            <!-- RBAC Role Mode Switcher -->
+            <div class="role-selector-group">
+                <label style="font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.05em;">Sign In Mode</label>
+                <div class="role-toggle-wrapper" id="role-toggle-wrapper">
+                    <button type="button" class="role-toggle-btn active" data-role="admin" id="role-btn-admin">
+                        <span>Admin</span>
+                    </button>
+                    <button type="button" class="role-toggle-btn" data-role="user" id="role-btn-user">
+                        <span>User</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="login-group">
+                <label for="login-username" id="label-username">Operator ID</label>
+                <input 
+                    type="text" 
+                    id="login-username" 
+                    class="login-input" 
+                    placeholder="Enter admin operator username" 
+                    autocomplete="username" 
+                    required 
+                    autofocus
+                />
+            </div>
+
+            <div class="login-group">
+                <label for="login-password">Access Passphrase</label>
+                <input 
+                    type="password" 
+                    id="login-password" 
+                    class="login-input" 
+                    placeholder="Password" 
+                    autocomplete="current-password" 
+                    required 
+                />
+            </div>
+
+            <button type="submit" id="btn-login-submit" class="login-btn">
+                Sign In to Terminal
+            </button>
+        </form>
+
+        <div class="login-footer-meta">
+            <span>Restricted Access | Authorized Operators Only</span>
+            <span>Meyhem Quant Engine v2.4 | Isolated Margin Mode</span>
+        </div>
+    </main>
+
+    <script>
+        // 1. Theme Management (Light by default, persists user preference)
+        const savedTheme = localStorage.getItem('mq_theme') || 'light';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        document.body.setAttribute('data-theme', savedTheme);
+
+        const themeBtn = document.getElementById('theme-toggle-btn');
+        const themeText = document.getElementById('theme-btn-text');
+
+        function updateThemeButtonText(theme) {
+            if (themeText) {
+                themeText.textContent = theme === 'light' ? 'Dark Theme' : 'Light Theme';
+            }
+        }
+        updateThemeButtonText(savedTheme);
+
+        if (themeBtn) {
+            themeBtn.addEventListener('click', () => {
+                const current = document.documentElement.getAttribute('data-theme') || 'light';
+                const next = current === 'light' ? 'dark' : 'light';
+                document.documentElement.setAttribute('data-theme', next);
+                document.body.setAttribute('data-theme', next);
+                localStorage.setItem('mq_theme', next);
+                updateThemeButtonText(next);
+            });
+        }
+
+        // 2. Role Selector Toggle Logic
+        let activeRole = 'admin';
+        const roleBtns = document.querySelectorAll('.role-toggle-btn');
+        const labelUsername = document.getElementById('label-username');
+        const inputUsername = document.getElementById('login-username');
+
+        roleBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                activeRole = btn.getAttribute('data-role');
+                roleBtns.forEach(b => b.classList.toggle('active', b === btn));
+                if (activeRole === 'user') {
+                    if (labelUsername) labelUsername.textContent = 'Account Username';
+                    if (inputUsername) inputUsername.placeholder = 'Enter viewer username (user)';
+                } else {
+                    if (labelUsername) labelUsername.textContent = 'Operator ID';
+                    if (inputUsername) inputUsername.placeholder = 'Enter admin operator username (mahum)';
+                }
+            });
+        });
+
+        // 3. Form Submission Handling
+        const form = document.getElementById('login-form');
+        const errorEl = document.getElementById('login-error');
+        const submitBtn = document.getElementById('btn-login-submit');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            errorEl.style.display = 'none';
+            errorEl.textContent = '';
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Authenticating...';
+
+            const username = document.getElementById('login-username').value.trim();
+            const password = document.getElementById('login-password').value;
+
+            try {
+                const resp = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: username,
+                        password: password,
+                        role: activeRole
+                    })
+                });
+                const data = await resp.json();
+
+                if (data.success && data.token) {
+                    localStorage.setItem('topg_session_token', data.token);
+                    localStorage.setItem('topg_admin_token', data.token);
+                    localStorage.setItem('topg_user_role', data.role || activeRole);
+                    window.location.href = '/';
+                } else {
+                    errorEl.textContent = data.message || 'Authentication rejected. Please check your credentials.';
+                    errorEl.style.display = 'block';
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Sign In to Terminal';
+                }
+            } catch (err) {
+                errorEl.textContent = 'Connection error. Could not reach server.';
+                errorEl.style.display = 'block';
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Sign In to Terminal';
+            }
+        });
+    </script>
+</body>
+</html>

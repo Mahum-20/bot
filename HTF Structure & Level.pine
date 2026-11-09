@@ -1,0 +1,725 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © nmahum216
+
+//@version=6
+indicator("TopG Last Swing Structure [BOS / CHoCH / Dual CHoCH]", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+// ==========================================
+// INPUTS & CONFIGURATION
+// ==========================================
+grpLookback = "Lookback Configuration"
+lookbackBars = input.int(1000, "Lookback Candles (Last Leg)", minval=100, maxval=5000, group=grpLookback, tooltip="Restricts structure evaluation to the last N candles up to live price")
+
+grpDisplay = "Display & Visual Settings"
+showBOS               = input.bool(true, "Show BOS (Break of Structure)", group=grpDisplay)
+showCHoCH             = input.bool(true, "Show CHoCH (Change of Character)", group=grpDisplay)
+showDualCHoCH         = input.bool(true, "Show Dual CHoCH", group=grpDisplay)
+showRetracementShapes = input.bool(false, "Show 2-Candle Retracement Shapes", group=grpDisplay)
+showActiveSwings      = input.bool(true, "Show Active Structure Levels", group=grpDisplay)
+
+grpTJL = "TJL Zone Rectangles (BOS Pullback & Swing Candles)"
+showTJLBoxes = input.bool(true, "Show TJL1 & TJL2 Rectangles on BOS", group=grpTJL)
+tjl1Color    = input.color(color.new(color.blue, 80), "TJL1 Box Fill Color (Pullback Start Candle)", group=grpTJL)
+tjl2Color    = input.color(color.new(color.purple, 80), "TJL2 Box Fill Color (HL / LH Candle)", group=grpTJL)
+tjlBorderCol = input.color(color.blue, "TJL Box Border Color", group=grpTJL)
+tjlExtend    = input.bool(true, "Extend TJL Rectangles to Current Price", group=grpTJL)
+
+grpColors = "Color & Style Settings"
+bullColor     = input.color(color.green, "Bullish Structure Color", group=grpColors)
+bearColor     = input.color(color.red, "Bearish Structure Color", group=grpColors)
+dualChochCol  = input.color(color.orange, "Dual CHoCH Color", group=grpColors)
+swingHighCol  = input.color(color.new(color.red, 40), "Active High Level Color", group=grpColors)
+swingLowCol   = input.color(color.new(color.green, 40), "Active Low Level Color", group=grpColors)
+
+lineStyleInput = input.string("Solid", "Structure Line Style", options=["Solid", "Dashed", "Dotted"], group=grpColors)
+textSizeInput  = input.string("Tiny", "Label Text Size", options=["Tiny", "Small", "Normal", "Large"], group=grpColors)
+
+// Convert style inputs
+getLineStyle(styleStr) =>
+    switch styleStr
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+getTextSize(sizeStr) =>
+    switch sizeStr
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => size.small
+
+lineStyle = getLineStyle(lineStyleInput)
+textSize  = getTextSize(textSizeInput)
+
+// Calculate dynamic starting bar for 1000-candle lookback
+startLookbackBar = math.max(0, last_bar_index - lookbackBars)
+inLookbackWindow = bar_index >= startLookbackBar
+
+// ==========================================
+// 2-CANDLE RETRACEMENT DEFINITIONS
+// ==========================================
+
+// Bearish Retracement (2 red candles where 2nd closes below low of 1st)
+isRed1 = close[1] < open[1]
+isRed2 = close < open
+bearishPullback = isRed1 and isRed2 and (close < low[1])
+
+// Bullish Retracement (2 green candles where 2nd closes above high of 1st)
+isGreen1 = close[1] > open[1]
+isGreen2 = close > open
+bullishPullback = isGreen1 and isGreen2 and (close > high[1])
+
+// Plot retracement shapes if enabled (only within lookback window)
+plotshape(inLookbackWindow and showRetracementShapes and bearishPullback, title="Bearish Retracement Signal", style=shape.labeldown, location=location.abovebar, color=bearColor, text="2RTR", textcolor=color.white, size=size.tiny)
+plotshape(inLookbackWindow and showRetracementShapes and bullishPullback, title="Bullish Retracement Signal", style=shape.labelup, location=location.belowbar, color=bullColor, text="2RTR", textcolor=color.white, size=size.tiny)
+
+// ==========================================
+// STATE MACHINE VARIABLES
+// ==========================================
+
+// Trend state: 0 = Neutral Initialization, 1 = Uptrend, -1 = Downtrend
+var int trend = 0
+
+// Point A: Bar index where last BOS break occurred
+var int pointA_bar = na
+
+// Point B search flag: Only search for 2RTR AFTER Point A (after a BOS)
+var bool waitingFor2RTR = true
+
+// Point C: Confirmed High (Uptrend) or Confirmed Low (Downtrend)
+var float pointC_val = na
+var int   pointC_bar = na
+var bool  pointC_active = false
+
+// Higher Low (HL in Uptrend) / Lower High (LH in Downtrend)
+var float confirmedHL_val = na
+var int   confirmedHL_bar = na
+var bool  confirmedHL_active = false
+
+var float confirmedLH_val = na
+var int   confirmedLH_bar = na
+var bool  confirmedLH_active = false
+
+// Dual CHoCH tracking
+var bool  hasBOSAfterCHoCH = true
+var float dualChochTargetVal = na
+var int   dualChochTargetBar = na
+var bool  dualChochActive    = false
+
+// Single-event guard per bar (prevents double drawing on same bar)
+var int lastDrawBar = -1
+
+// Dynamic preview lines
+var line activeHighLine = na
+var line activeLowLine  = na
+
+// TJL Box tracking for CHoCH transformations
+var box lastTJL1_box   = na
+var box lastTJL2_box   = na
+var box lastDouble_box = na
+var box lastLevel4_box = na
+
+// Color definitions for Buying (Bullish) vs Selling (Bearish) Levels
+bullFillCol   = color.new(bullColor, 80)
+bullBorderCol = bullColor
+bearFillCol   = color.new(bearColor, 80)
+bearBorderCol = bearColor
+
+recolorCycleBoxes(color fillCol, color borderCol) =>
+    if not na(lastTJL1_box)
+        box.set_bgcolor(lastTJL1_box, fillCol)
+        box.set_border_color(lastTJL1_box, borderCol)
+    if not na(lastTJL2_box)
+        box.set_bgcolor(lastTJL2_box, fillCol)
+        box.set_border_color(lastTJL2_box, borderCol)
+    if not na(lastDouble_box)
+        box.set_bgcolor(lastDouble_box, fillCol)
+        box.set_border_color(lastDouble_box, borderCol)
+    if not na(lastLevel4_box)
+        box.set_bgcolor(lastLevel4_box, fillCol)
+        box.set_border_color(lastLevel4_box, borderCol)
+
+// Level of 4 tracking after Dual CHoCH
+var float levelOf4_val    = na
+var int   levelOf4_bar    = na
+var bool  levelOf4_active = false
+
+// Initialization at lookback boundary start bar
+if bar_index == startLookbackBar
+    pointA_bar := startLookbackBar
+    pointC_val := high
+    pointC_bar := startLookbackBar
+    confirmedHL_val := low
+    confirmedHL_bar := startLookbackBar
+    confirmedLH_val := high
+    confirmedLH_bar := startLookbackBar
+
+// Safety helper to clamp historical bar_index references within TradingView limits
+safeX1(x1Bar) =>
+    na(x1Bar) ? math.max(0, bar_index - 4800) : math.max(x1Bar, math.max(0, bar_index - 4800))
+
+// Helper functions for finding peak/trough between two bar indices safely
+getHighestPeak(startBar, endBar) =>
+    int sBar = math.max(safeX1(startBar), math.max(0, bar_index - 300))
+    int eBar = safeX1(endBar)
+    int offsetStart = bar_index - sBar
+    int offsetEnd   = bar_index - eBar
+    hVal = high[offsetStart]
+    hBar = sBar
+    if offsetStart >= 0 and offsetEnd >= 0
+        int minOffset = math.min(offsetStart, offsetEnd)
+        int maxOffset = math.max(offsetStart, offsetEnd)
+        for i = maxOffset to minOffset
+            if high[i] > hVal
+                hVal := high[i]
+                hBar := bar_index - i
+    [hVal, hBar]
+
+getLowestTrough(startBar, endBar) =>
+    int sBar = math.max(safeX1(startBar), math.max(0, bar_index - 300))
+    int eBar = safeX1(endBar)
+    int offsetStart = bar_index - sBar
+    int offsetEnd   = bar_index - eBar
+    lVal = low[offsetStart]
+    lBar = sBar
+    if offsetStart >= 0 and offsetEnd >= 0
+        int minOffset = math.min(offsetStart, offsetEnd)
+        int maxOffset = math.max(offsetStart, offsetEnd)
+        for i = maxOffset to minOffset
+            if low[i] < lVal
+                lVal := low[i]
+                lBar := bar_index - i
+    [lVal, lBar]
+
+// Event flags for alerts
+var bool eventBullBOS       = false
+var bool eventBearBOS       = false
+var bool eventBullCHoCH     = false
+var bool eventBearCHoCH     = false
+var bool eventBullDualCHoCH = false
+var bool eventBearDualCHoCH = false
+
+eventBullBOS       := false
+eventBearBOS       := false
+eventBullCHoCH     := false
+eventBearCHoCH     := false
+eventBullDualCHoCH := false
+eventBearDualCHoCH := false
+
+// ==========================================
+// CORE MARKET STRUCTURE LOGIC (LAST SWING)
+// ==========================================
+
+if inLookbackWindow
+
+    // ------------------------------------------
+    // 1. NEUTRAL COLD START INITIALIZATION AT LOOKBACK BOUNDARY
+    // ------------------------------------------
+    if trend == 0
+        int recentStart = math.max(startLookbackBar, bar_index - 30)
+        if bearishPullback
+            [hVal, hBar] = getHighestPeak(recentStart, bar_index)
+            pointC_val := hVal
+            pointC_bar := hBar
+            pointC_active := true
+            trend := 1
+            waitingFor2RTR := false
+            pointA_bar := bar_index
+        else if bullishPullback
+            [lVal, lBar] = getLowestTrough(recentStart, bar_index)
+            pointC_val := lVal
+            pointC_bar := lBar
+            pointC_active := true
+            trend := -1
+            waitingFor2RTR := false
+            pointA_bar := bar_index
+
+    // ------------------------------------------
+    // 2. DUAL CHOCH BREAK EVALUATION
+    // ------------------------------------------
+    if dualChochActive and not hasBOSAfterCHoCH and not na(dualChochTargetVal)
+        // Bullish Dual CHoCH: 2 consecutive candles close above pre-CHoCH Higher High (Point C) without any intermediate Bearish BOS
+        if trend == -1 and close[1] > dualChochTargetVal and close > dualChochTargetVal
+            trend := 1 // Revert to Uptrend
+            dualChochActive := false
+            pointC_active   := false // Deactivate Point C to prevent double-labeling with BOS
+            hasBOSAfterCHoCH := true
+            eventBullDualCHoCH := true
+            lastDrawBar := bar_index // Guard bar from secondary draws
+            
+            // Draw Dual CHoCH line
+            if showDualCHoCH
+                int x1_safe = safeX1(dualChochTargetBar)
+                string ttBullDual2 = "Event: Bullish Dual CHoCH (Sec 2)\nTrend: Shift to Uptrend (+1)\nhasBOSAfterCHoCH: true\ndualChochActive: false\nTarget Price: " + str.tostring(dualChochTargetVal) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=dualChochTargetVal, x2=bar_index, y2=dualChochTargetVal, color=dualChochCol, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=dualChochTargetVal, text="Dual CHoCH", color=color.new(dualChochCol, 100), textcolor=dualChochCol, style=label.style_label_down, size=textSize, tooltip=ttBullDual2)
+            
+            // Dual CHoCH Box Transformations & 4th Box Creation (level of 4)
+            int llBar = not na(pointC_bar) and pointC_bar >= pointA_bar ? pointC_bar : na
+            if na(llBar)
+                [llV, llB] = getLowestTrough(pointA_bar, math.max(pointA_bar, bar_index - 1))
+                llBar := llB
+            int ll_x1 = safeX1(llBar)
+            int ll_offset = bar_index - ll_x1
+            if ll_offset >= 0
+                float db_top = math.min(open[ll_offset], close[ll_offset])
+                float db_bot = low[ll_offset]
+                if showTJLBoxes
+                    if not na(lastTJL1_box)
+                        box.set_text(lastTJL1_box, "A+")
+                    if not na(lastTJL2_box)
+                        box.set_text(lastTJL2_box, "RBS")
+                    if not na(lastDouble_box)
+                        box.set_text(lastDouble_box, "LEVEL of 3")
+                    int right_x = tjlExtend ? bar_index : ll_x1 + 5
+                    lastLevel4_box := box.new(left=ll_x1, top=db_top, right=right_x, bottom=db_bot, border_color=bullBorderCol, border_width=1, bgcolor=bullFillCol, text="level of 4", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+                    recolorCycleBoxes(bullFillCol, bullBorderCol)
+                
+                // Track level of 4 price level for post-Dual CHoCH 2-candle break
+                levelOf4_val    := db_bot
+                levelOf4_bar    := llBar
+                levelOf4_active := true
+
+            // Set new Point A and start searching for next 2RTR
+            pointA_bar := bar_index
+            waitingFor2RTR := true
+
+        // Bearish Dual CHoCH: 2 consecutive candles close below pre-CHoCH Lower Low (Point C) without any intermediate Bullish BOS
+        else if trend == 1 and close[1] < dualChochTargetVal and close < dualChochTargetVal
+            trend := -1 // Revert to Downtrend
+            dualChochActive := false
+            pointC_active   := false // Deactivate Point C to prevent double-labeling with BOS
+            hasBOSAfterCHoCH := true
+            eventBearDualCHoCH := true
+            lastDrawBar := bar_index // Guard bar from secondary draws
+
+            // Draw Dual CHoCH line
+            if showDualCHoCH
+                int x1_safe = safeX1(dualChochTargetBar)
+                string ttBearDual2 = "Event: Bearish Dual CHoCH (Sec 2)\nTrend: Shift to Downtrend (-1)\nhasBOSAfterCHoCH: true\ndualChochActive: false\nTarget Price: " + str.tostring(dualChochTargetVal) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=dualChochTargetVal, x2=bar_index, y2=dualChochTargetVal, color=dualChochCol, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=dualChochTargetVal, text="Dual CHoCH", color=color.new(dualChochCol, 100), textcolor=dualChochCol, style=label.style_label_down, size=textSize, tooltip=ttBearDual2)
+
+            // Dual CHoCH Box Transformations & 4th Box Creation (level of 4)
+            int hhBar = not na(pointC_bar) and pointC_bar >= pointA_bar ? pointC_bar : na
+            if na(hhBar)
+                [hhV, hhB] = getHighestPeak(pointA_bar, math.max(pointA_bar, bar_index - 1))
+                hhBar := hhB
+            int hh_x1 = safeX1(hhBar)
+            int hh_offset = bar_index - hh_x1
+            if hh_offset >= 0
+                float dt_top = high[hh_offset]
+                float dt_bot = math.max(open[hh_offset], close[hh_offset])
+                if showTJLBoxes
+                    if not na(lastTJL1_box)
+                        box.set_text(lastTJL1_box, "A+")
+                    if not na(lastTJL2_box)
+                        box.set_text(lastTJL2_box, "SBR")
+                    if not na(lastDouble_box)
+                        box.set_text(lastDouble_box, "LEVEL of 3")
+                    int right_x = tjlExtend ? bar_index : hh_x1 + 5
+                    lastLevel4_box := box.new(left=hh_x1, top=dt_top, right=right_x, bottom=dt_bot, border_color=bearBorderCol, border_width=1, bgcolor=bearFillCol, text="level of 4", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+                    recolorCycleBoxes(bearFillCol, bearBorderCol)
+
+                // Track level of 4 price level for post-Dual CHoCH 2-candle break
+                levelOf4_val    := dt_top
+                levelOf4_bar    := hhBar
+                levelOf4_active := true
+
+            // Set new Point A and start searching for next 2RTR
+            pointA_bar := bar_index
+            waitingFor2RTR := true
+
+    // ------------------------------------------
+    // 2.5 LEVEL OF 4 BREAKOUT EVALUATION (POST-DUAL CHOCH CHOCH BREAK)
+    // ------------------------------------------
+    if levelOf4_active and not na(levelOf4_val)
+        // Bearish CHoCH: In Uptrend, 2 consecutive candles close below Level 4 support
+        if trend == 1 and close[1] < levelOf4_val and close < levelOf4_val and lastDrawBar != bar_index
+            trend := -1 // Shift to Downtrend
+            levelOf4_active    := false
+            pointC_active      := false // Deactivate old Point C to prevent ghost BOS / TJL box creation on unbroken level
+            confirmedHL_active := false
+            confirmedLH_active := false
+            hasBOSAfterCHoCH   := false
+            dualChochActive    := true
+            eventBearCHoCH     := true
+            lastDrawBar        := bar_index
+
+            // Clear box handles so previous Dual CHoCH boxes remain untouched and no new boxes are drawn for this CHoCH
+            lastTJL1_box   := na
+            lastTJL2_box   := na
+            lastDouble_box := na
+            lastLevel4_box := na
+
+            if showCHoCH
+                int x1_safe = safeX1(levelOf4_bar)
+                string ttBearL4 = "Event: Bearish CHoCH (Level 4 Break)\nTrend: Shift to Downtrend (-1)\nLevel 4 Price: " + str.tostring(levelOf4_val) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=levelOf4_val, x2=bar_index, y2=levelOf4_val, color=bearColor, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=levelOf4_val, text="CHoCH", color=color.new(bearColor, 100), textcolor=bearColor, style=label.style_label_down, size=textSize, tooltip=ttBearL4)
+
+            // Reset Point A for standard 2RTR search
+            pointA_bar := bar_index
+            waitingFor2RTR := true
+
+        // Bullish CHoCH: In Downtrend, 2 consecutive candles close above Level 4 resistance
+        else if trend == -1 and close[1] > levelOf4_val and close > levelOf4_val and lastDrawBar != bar_index
+            trend := 1 // Shift to Uptrend
+            levelOf4_active    := false
+            pointC_active      := false // Deactivate old Point C to prevent ghost BOS / TJL box creation on unbroken level
+            confirmedHL_active := false
+            confirmedLH_active := false
+            hasBOSAfterCHoCH   := false
+            dualChochActive    := true
+            eventBullCHoCH     := true
+            lastDrawBar        := bar_index
+
+            // Clear box handles so previous Dual CHoCH boxes remain untouched and no new boxes are drawn for this CHoCH
+            lastTJL1_box   := na
+            lastTJL2_box   := na
+            lastDouble_box := na
+            lastLevel4_box := na
+
+            if showCHoCH
+                int x1_safe = safeX1(levelOf4_bar)
+                string ttBullL4 = "Event: Bullish CHoCH (Level 4 Break)\nTrend: Shift to Uptrend (+1)\nLevel 4 Price: " + str.tostring(levelOf4_val) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=levelOf4_val, x2=bar_index, y2=levelOf4_val, color=bullColor, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=levelOf4_val, text="CHoCH", color=color.new(bullColor, 100), textcolor=bullColor, style=label.style_label_down, size=textSize, tooltip=ttBullL4)
+
+            // Reset Point A for standard 2RTR search
+            pointA_bar := bar_index
+            waitingFor2RTR := true
+
+    // ------------------------------------------
+    // 3. SEARCH FOR POINT B (2RTR AFTER BOS / POINT A)
+    // ------------------------------------------
+    if waitingFor2RTR and not na(pointA_bar)
+        if trend == 1 and bearishPullback
+            // Point B found! Find highest peak between Point A and Point B (bar_index)
+            [peakVal, peakBar] = getHighestPeak(pointA_bar, bar_index)
+            pointC_val := peakVal
+            pointC_bar := peakBar
+            pointC_active := true
+            waitingFor2RTR := false // Stop searching until next BOS
+
+        else if trend == -1 and bullishPullback
+            // Point B found! Find lowest trough between Point A and Point B (bar_index)
+            [troughVal, troughBar] = getLowestTrough(pointA_bar, bar_index)
+            pointC_val := troughVal
+            pointC_bar := troughBar
+            pointC_active := true
+            waitingFor2RTR := false // Stop searching until next BOS
+
+    // ------------------------------------------
+    // 4. CHOCH EVALUATION (BREAK OF HIGHER LOW / LOWER HIGH)
+    // ------------------------------------------
+
+    // Bearish CHoCH: In Uptrend, 2 consecutive candles close below confirmed Higher Low (HL)
+    if trend == 1 and confirmedHL_active and not na(confirmedHL_val) and close[1] < confirmedHL_val and close < confirmedHL_val
+        confirmedHL_active := false
+        trend := -1 // Shift to Downtrend
+        
+        // Check if this CHoCH is actually a Dual CHoCH (reversal before any BOS occurred after previous CHoCH)
+        if not hasBOSAfterCHoCH
+            eventBearDualCHoCH := true
+            hasBOSAfterCHoCH   := true
+            dualChochActive    := false
+            pointC_active      := false
+            lastDrawBar        := bar_index
+            
+            if showDualCHoCH
+                int x1_safe = safeX1(confirmedHL_bar)
+                string ttBearDual4 = "Event: Bearish Dual CHoCH (Sec 4)\nTrend: Shift to Downtrend (-1)\nhasBOSAfterCHoCH: true\ndualChochActive: false\nBroken HL Price: " + str.tostring(confirmedHL_val) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=confirmedHL_val, x2=bar_index, y2=confirmedHL_val, color=dualChochCol, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=confirmedHL_val, text="Dual CHoCH", color=color.new(dualChochCol, 100), textcolor=dualChochCol, style=label.style_label_down, size=textSize, tooltip=ttBearDual4)
+
+            // Dual CHoCH Box Transformations & 4th Box Creation (level of 4)
+            int hhBar = not na(pointC_bar) and pointC_bar >= pointA_bar ? pointC_bar : na
+            if na(hhBar)
+                [hhV, hhB] = getHighestPeak(pointA_bar, math.max(pointA_bar, bar_index - 1))
+                hhBar := hhB
+            int hh_x1 = safeX1(hhBar)
+            int hh_offset = bar_index - hh_x1
+            if hh_offset >= 0
+                float dt_top = high[hh_offset]
+                float dt_bot = math.max(open[hh_offset], close[hh_offset])
+                if showTJLBoxes
+                    if not na(lastTJL1_box)
+                        box.set_text(lastTJL1_box, "A+")
+                    if not na(lastTJL2_box)
+                        box.set_text(lastTJL2_box, "SBR")
+                    if not na(lastDouble_box)
+                        box.set_text(lastDouble_box, "LEVEL of 3")
+                    int right_x = tjlExtend ? bar_index : hh_x1 + 5
+                    lastLevel4_box := box.new(left=hh_x1, top=dt_top, right=right_x, bottom=dt_bot, border_color=bearBorderCol, border_width=1, bgcolor=bearFillCol, text="level of 4", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+                    recolorCycleBoxes(bearFillCol, bearBorderCol)
+                
+                // Track level of 4 price level for post-Dual CHoCH 2-candle break
+                levelOf4_val    := dt_top
+                levelOf4_bar    := hhBar
+                levelOf4_active := true
+        else
+            eventBearCHoCH   := true
+            hasBOSAfterCHoCH := false
+            lastDrawBar      := bar_index
+            
+            if showCHoCH
+                int x1_safe = safeX1(confirmedHL_bar)
+                string ttBearChoch4 = "Event: Bearish CHoCH (Sec 4)\nTrend: Shift to Downtrend (-1)\nhasBOSAfterCHoCH: false\ndualChochActive: true\nBroken HL Price: " + str.tostring(confirmedHL_val) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=confirmedHL_val, x2=bar_index, y2=confirmedHL_val, color=bearColor, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=confirmedHL_val, text="CHoCH", color=color.new(bearColor, 100), textcolor=bearColor, style=label.style_label_down, size=textSize, tooltip=ttBearChoch4)
+
+            // CHoCH Box Transformations (TJL1 -> QML, TJL2 -> SBR) & 3rd Box Creation (Double Top)
+            if showTJLBoxes
+                if not na(lastTJL1_box)
+                    box.set_text(lastTJL1_box, "QML")
+                if not na(lastTJL2_box)
+                    box.set_text(lastTJL2_box, "SBR")
+
+                // Find Higher High peak candle where pullback started after BOS (pointC_bar)
+                int hhBar = not na(pointC_bar) and pointC_bar >= pointA_bar ? pointC_bar : na
+                if na(hhBar)
+                    [hhV, hhB] = getHighestPeak(pointA_bar, math.max(pointA_bar, bar_index - 1))
+                    hhBar := hhB
+                int hh_x1 = safeX1(hhBar)
+                int hh_offset = bar_index - hh_x1
+                if hh_offset >= 0
+                    float dt_top = high[hh_offset]
+                    float dt_bot = math.max(open[hh_offset], close[hh_offset])
+                    int right_x = tjlExtend ? bar_index : hh_x1 + 5
+                    lastDouble_box := box.new(left=hh_x1, top=dt_top, right=right_x, bottom=dt_bot, border_color=bearBorderCol, border_width=1, bgcolor=bearFillCol, text="Double Top", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+                recolorCycleBoxes(bearFillCol, bearBorderCol)
+
+            // Arm Point C (the Last Higher High) for Dual CHoCH
+            dualChochTargetVal := pointC_val
+            dualChochTargetBar := pointC_bar
+            dualChochActive    := true
+            pointC_active      := false // Deactivate old Uptrend Point C High to prevent premature Bullish BOS on new Downtrend
+
+        // Point A resets to this bar
+        pointA_bar := bar_index
+        waitingFor2RTR := true
+
+    // Bullish CHoCH: In Downtrend, 2 consecutive candles close above confirmed Lower High (LH)
+    else if trend == -1 and confirmedLH_active and not na(confirmedLH_val) and close[1] > confirmedLH_val and close > confirmedLH_val
+        confirmedLH_active := false
+        trend := 1 // Shift to Uptrend
+        
+        // Check if this CHoCH is actually a Dual CHoCH (reversal before any BOS occurred after previous CHoCH)
+        if not hasBOSAfterCHoCH
+            eventBullDualCHoCH := true
+            hasBOSAfterCHoCH   := true
+            dualChochActive    := false
+            pointC_active      := false
+            lastDrawBar        := bar_index
+            
+            if showDualCHoCH
+                int x1_safe = safeX1(confirmedLH_bar)
+                string ttBullDual4 = "Event: Bullish Dual CHoCH (Sec 4)\nTrend: Shift to Uptrend (+1)\nhasBOSAfterCHoCH: true\ndualChochActive: false\nBroken LH Price: " + str.tostring(confirmedLH_val) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=confirmedLH_val, x2=bar_index, y2=confirmedLH_val, color=dualChochCol, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=confirmedLH_val, text="Dual CHoCH", color=color.new(dualChochCol, 100), textcolor=dualChochCol, style=label.style_label_down, size=textSize, tooltip=ttBullDual4)
+
+            // Dual CHoCH Box Transformations & 4th Box Creation (level of 4)
+            int llBar = not na(pointC_bar) and pointC_bar >= pointA_bar ? pointC_bar : na
+            if na(llBar)
+                [llV, llB] = getLowestTrough(pointA_bar, math.max(pointA_bar, bar_index - 1))
+                llBar := llB
+            int ll_x1 = safeX1(llBar)
+            int ll_offset = bar_index - ll_x1
+            if ll_offset >= 0
+                float db_top = math.min(open[ll_offset], close[ll_offset])
+                float db_bot = low[ll_offset]
+                if showTJLBoxes
+                    if not na(lastTJL1_box)
+                        box.set_text(lastTJL1_box, "A+")
+                    if not na(lastTJL2_box)
+                        box.set_text(lastTJL2_box, "RBS")
+                    if not na(lastDouble_box)
+                        box.set_text(lastDouble_box, "LEVEL of 3")
+                    int right_x = tjlExtend ? bar_index : ll_x1 + 5
+                    lastLevel4_box := box.new(left=ll_x1, top=db_top, right=right_x, bottom=db_bot, border_color=bullBorderCol, border_width=1, bgcolor=bullFillCol, text="level of 4", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+                    recolorCycleBoxes(bullFillCol, bullBorderCol)
+                
+                // Track level of 4 price level for post-Dual CHoCH 2-candle break
+                levelOf4_val    := db_bot
+                levelOf4_bar    := llBar
+                levelOf4_active := true
+        else
+            eventBullCHoCH   := true
+            hasBOSAfterCHoCH := false
+            lastDrawBar      := bar_index
+            
+            if showCHoCH
+                int x1_safe = safeX1(confirmedLH_bar)
+                string ttBullChoch4 = "Event: Bullish CHoCH (Sec 4)\nTrend: Shift to Uptrend (+1)\nhasBOSAfterCHoCH: false\ndualChochActive: true\nBroken LH Price: " + str.tostring(confirmedLH_val) + "\nBar Index: " + str.tostring(bar_index)
+                line.new(x1=x1_safe, y1=confirmedLH_val, x2=bar_index, y2=confirmedLH_val, color=bullColor, width=1, style=line.style_solid)
+                label.new(x=math.round(math.avg(x1_safe, bar_index)), y=confirmedLH_val, text="CHoCH", color=color.new(bullColor, 100), textcolor=bullColor, style=label.style_label_down, size=textSize, tooltip=ttBullChoch4)
+
+            // CHoCH Box Transformations (TJL1 -> QML, TJL2 -> RBS) & 3rd Box Creation (Double Bottom)
+            if showTJLBoxes
+                if not na(lastTJL1_box)
+                    box.set_text(lastTJL1_box, "QML")
+                if not na(lastTJL2_box)
+                    box.set_text(lastTJL2_box, "RBS")
+
+                // Find Lower Low trough candle where pullback started after BOS (pointC_bar)
+                int llBar = not na(pointC_bar) and pointC_bar >= pointA_bar ? pointC_bar : na
+                if na(llBar)
+                    [llV, llB] = getLowestTrough(pointA_bar, math.max(pointA_bar, bar_index - 1))
+                    llBar := llB
+                int ll_x1 = safeX1(llBar)
+                int ll_offset = bar_index - ll_x1
+                if ll_offset >= 0
+                    float db_top = math.min(open[ll_offset], close[ll_offset])
+                    float db_bot = low[ll_offset]
+                    int right_x = tjlExtend ? bar_index : ll_x1 + 5
+                    lastDouble_box := box.new(left=ll_x1, top=db_top, right=right_x, bottom=db_bot, border_color=bullBorderCol, border_width=1, bgcolor=bullFillCol, text="Double Bottom", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+                recolorCycleBoxes(bullFillCol, bullBorderCol)
+
+            // Arm Point C (the Last Lower Low) for Dual CHoCH
+            dualChochTargetVal := pointC_val
+            dualChochTargetBar := pointC_bar
+            dualChochActive    := true
+            pointC_active      := false // Deactivate old Downtrend Point C Low to prevent premature Bearish BOS on new Uptrend
+
+        // Point A resets to this bar
+        pointA_bar := bar_index
+        waitingFor2RTR := true
+
+    // ------------------------------------------
+    // 5. BOS EVALUATION (BREAK OF POINT C & TJL RECTANGLES)
+    // ------------------------------------------
+
+    // Bullish BOS: Price closes above Point C (Confirmed High)
+    if trend == 1 and pointC_active and not na(pointC_val) and close > pointC_val and lastDrawBar != bar_index
+        pointC_active := false // Deactivate broken Point C
+        eventBullBOS  := true
+        hasBOSAfterCHoCH := true
+        dualChochActive  := false // Valid BOS cancels Dual CHoCH target
+        levelOf4_active  := false // Valid BOS cancels level of 4 target
+        lastDouble_box   := na
+        lastLevel4_box   := na
+        lastDrawBar := bar_index
+
+        if showBOS
+            int x1_safe = safeX1(pointC_bar)
+            string ttBullBOS = "Event: Bullish BOS (Sec 5)\nTrend: Uptrend (+1)\nhasBOSAfterCHoCH: true\ndualChochActive: false\nBroken Point C Price: " + str.tostring(pointC_val) + "\nBar Index: " + str.tostring(bar_index)
+            line.new(x1=x1_safe, y1=pointC_val, x2=bar_index, y2=pointC_val, color=bullColor, width=1, style=line.style_solid)
+            label.new(x=math.round(math.avg(x1_safe, bar_index)), y=pointC_val, text="BOS", color=color.new(bullColor, 100), textcolor=bullColor, style=label.style_label_down, size=textSize, tooltip=ttBullBOS)
+
+        // Calculate Higher Low (HL): Lowest low between Point C bar and current BOS bar
+        [hlVal, hlBar] = getLowestTrough(pointC_bar, bar_index)
+        confirmedHL_val := hlVal
+        confirmedHL_bar := hlBar
+        confirmedHL_active := true
+
+        // Draw TJL1 and TJL2 rectangles on BOS
+        if showTJLBoxes
+            // TJL1: Upper wick of Point C candle (the Higher High candle that started the pullback)
+            int pC_x1 = safeX1(pointC_bar)
+            int pC_offset = bar_index - pC_x1
+            if pC_offset >= 0
+                float tjl1_top = high[pC_offset]
+                float tjl1_bot = math.max(open[pC_offset], close[pC_offset])
+                int right_x = tjlExtend ? bar_index : pC_x1 + 5
+                lastTJL1_box := box.new(left=pC_x1, top=tjl1_top, right=right_x, bottom=tjl1_bot, border_color=bullBorderCol, border_width=1, bgcolor=bullFillCol, text="TJL1", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+
+            // TJL2: Lower wick of HL candle (the Lower Low candle)
+            int hl_x1 = safeX1(hlBar)
+            int hl_offset = bar_index - hl_x1
+            if hl_offset >= 0
+                float tjl2_top = math.min(open[hl_offset], close[hl_offset])
+                float tjl2_bot = low[hl_offset]
+                int right_x = tjlExtend ? bar_index : hl_x1 + 5
+                lastTJL2_box := box.new(left=hl_x1, top=tjl2_top, right=right_x, bottom=tjl2_bot, border_color=bullBorderCol, border_width=1, bgcolor=bullFillCol, text="TJL2", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+            
+            recolorCycleBoxes(bullFillCol, bullBorderCol)
+
+        // Set new Point A = current bar index, start searching for next 2RTR (Point B)
+        pointA_bar := bar_index
+        waitingFor2RTR := true
+
+    // Bearish BOS: Price closes below Point C (Confirmed Low)
+    else if trend == -1 and pointC_active and not na(pointC_val) and close < pointC_val and lastDrawBar != bar_index
+        pointC_active := false // Deactivate broken Point C
+        eventBearBOS  := true
+        hasBOSAfterCHoCH := true
+        dualChochActive  := false // Valid BOS cancels Dual CHoCH target
+        levelOf4_active  := false // Valid BOS cancels level of 4 target
+        lastDouble_box   := na
+        lastLevel4_box   := na
+        lastDrawBar := bar_index
+
+        if showBOS
+            int x1_safe = safeX1(pointC_bar)
+            string ttBearBOS = "Event: Bearish BOS (Sec 5)\nTrend: Downtrend (-1)\nhasBOSAfterCHoCH: true\ndualChochActive: false\nBroken Point C Price: " + str.tostring(pointC_val) + "\nBar Index: " + str.tostring(bar_index)
+            line.new(x1=x1_safe, y1=pointC_val, x2=bar_index, y2=pointC_val, color=bearColor, width=1, style=line.style_solid)
+            label.new(x=math.round(math.avg(x1_safe, bar_index)), y=pointC_val, text="BOS", color=color.new(bearColor, 100), textcolor=bearColor, style=label.style_label_down, size=textSize, tooltip=ttBearBOS)
+
+        // Calculate Lower High (LH): Highest high between Point C bar and current BOS bar
+        [lhVal, lhBar] = getHighestPeak(pointC_bar, bar_index)
+        confirmedLH_val := lhVal
+        confirmedLH_bar := lhBar
+        confirmedLH_active := true
+
+        // Draw TJL1 and TJL2 rectangles on BOS
+        if showTJLBoxes
+            // TJL1: Lower wick of Point C candle (the Lower Low candle that started the pullback)
+            int pC_x1 = safeX1(pointC_bar)
+            int pC_offset = bar_index - pC_x1
+            if pC_offset >= 0
+                float tjl1_top = math.min(open[pC_offset], close[pC_offset])
+                float tjl1_bot = low[pC_offset]
+                int right_x = tjlExtend ? bar_index : pC_x1 + 5
+                lastTJL1_box := box.new(left=pC_x1, top=tjl1_top, right=right_x, bottom=tjl1_bot, border_color=bearBorderCol, border_width=1, bgcolor=bearFillCol, text="TJL1", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+
+            // TJL2: Upper wick of LH candle (the Higher High candle)
+            int lh_x1 = safeX1(lhBar)
+            int lh_offset = bar_index - lh_x1
+            if lh_offset >= 0
+                float tjl2_top = high[lh_offset]
+                float tjl2_bot = math.max(open[lh_offset], close[lh_offset])
+                int right_x = tjlExtend ? bar_index : lh_x1 + 5
+                lastTJL2_box := box.new(left=lh_x1, top=tjl2_top, right=right_x, bottom=tjl2_bot, border_color=bearBorderCol, border_width=1, bgcolor=bearFillCol, text="TJL2", text_size=size.tiny, text_color=color.white, text_halign=text.align_center, text_valign=text.align_center)
+            
+            recolorCycleBoxes(bearFillCol, bearBorderCol)
+
+        // Set new Point A = current bar index, start searching for next 2RTR (Point B)
+        pointA_bar := bar_index
+        waitingFor2RTR := true
+
+    // ------------------------------------------
+    // 6. RENDER DYNAMIC ACTIVE STRUCTURE LEVELS
+    // ------------------------------------------
+    if showActiveSwings
+        if trend == 1
+            if pointC_active and not na(pointC_val)
+                line.delete(activeHighLine)
+                int x1_safe = safeX1(pointC_bar)
+                activeHighLine := line.new(x1=x1_safe, y1=pointC_val, x2=bar_index + 2, y2=pointC_val, color=swingHighCol, width=1, style=line.style_dashed)
+            if confirmedHL_active and not na(confirmedHL_val)
+                line.delete(activeLowLine)
+                int x1_safe = safeX1(confirmedHL_bar)
+                activeLowLine := line.new(x1=x1_safe, y1=confirmedHL_val, x2=bar_index + 2, y2=confirmedHL_val, color=swingLowCol, width=1, style=line.style_dashed)
+        else if trend == -1
+            if pointC_active and not na(pointC_val)
+                line.delete(activeLowLine)
+                int x1_safe = safeX1(pointC_bar)
+                activeLowLine := line.new(x1=x1_safe, y1=pointC_val, x2=bar_index + 2, y2=pointC_val, color=swingLowCol, width=1, style=line.style_dashed)
+            if confirmedLH_active and not na(confirmedLH_val)
+                line.delete(activeHighLine)
+                int x1_safe = safeX1(confirmedLH_bar)
+                activeHighLine := line.new(x1=x1_safe, y1=confirmedLH_val, x2=bar_index + 2, y2=confirmedLH_val, color=swingHighCol, width=1, style=line.style_dashed)
+
+// ==========================================
+// ALERTS
+// ==========================================
+alertcondition(eventBullBOS, title="Bullish BOS", message="Bullish Break of Structure (BOS) detected on {{interval}} chart.")
+alertcondition(eventBearBOS, title="Bearish BOS", message="Bearish Break of Structure (BOS) detected on {{interval}} chart.")
+alertcondition(eventBullCHoCH, title="Bullish CHoCH", message="Bullish Change of Character (CHoCH) detected on {{interval}} chart.")
+alertcondition(eventBearCHoCH, title="Bearish CHoCH", message="Bearish Change of Character (CHoCH) detected on {{interval}} chart.")
+alertcondition(eventBullDualCHoCH, title="Bullish Dual CHoCH", message="Bullish Dual CHoCH detected on {{interval}} chart.")
+alertcondition(eventBearDualCHoCH, title="Bearish Dual CHoCH", message="Bearish Dual CHoCH detected on {{interval}} chart.")
+alertcondition(bearishPullback, title="Bearish 2-Candle Retracement", message="Bearish 2-Candle Retracement confirmed on {{interval}} chart.")
+alertcondition(bullishPullback, title="Bullish 2-Candle Retracement", message="Bullish 2-Candle Retracement confirmed on {{interval}} chart.")

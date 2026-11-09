@@ -1,0 +1,778 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Meyhem Quant | Trading & Risk Terminal</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css?v=3120">
+    <script>
+        (function() {
+            const savedTheme = localStorage.getItem('mq_theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+        })();
+    </script>
+    <script src="/static/lightweight-charts.js"></script>
+</head>
+<body data-theme="light">
+    <!-- MAIN APPLICATION WRAPPER (SIDEBAR + MAIN CONTENT) -->
+    <div class="app-layout">
+        <!-- VERTICAL LEFT SIDEBAR -->
+        <aside class="app-sidebar" id="app-sidebar">
+            <!-- Brand / Logo -->
+            <div class="sidebar-brand" id="sidebar-brand" style="cursor: pointer;" title="Back to Dashboard Overview">
+                <img src="/static/favicon.svg" alt="Meyhem Quant Logo" class="brand-icon" width="24" height="24">
+                <div class="brand-text">
+                    <span class="brand-title">Meyhem Quant</span>
+                    <span class="brand-badge">INSTITUTIONAL</span>
+                </div>
+            </div>
+
+            <!-- Structured Navigation Links -->
+            <nav class="sidebar-nav">
+                <div class="nav-section-label">Trading & Analysis</div>
+                <button class="nav-item active" data-page="overview" id="nav-overview">
+                    <span class="nav-indicator"></span>
+                    <span class="nav-label">Overview & Controls</span>
+                </button>
+                <button class="nav-item" data-page="charts" id="nav-charts">
+                    <span class="nav-indicator"></span>
+                    <span class="nav-label">Live Candlestick Charts</span>
+                </button>
+                <button class="nav-item" data-page="calendar" id="nav-calendar">
+                    <span class="nav-indicator"></span>
+                    <span class="nav-label">Macroeconomic Calendar</span>
+                </button>
+
+                <div class="nav-section-label">Risk & Ledgers</div>
+                <button class="nav-item" data-page="history" id="nav-history">
+                    <span class="nav-indicator"></span>
+                    <span class="nav-label">Execution Ledger</span>
+                </button>
+                <button class="nav-item" data-page="risk" id="nav-risk">
+                    <span class="nav-indicator"></span>
+                    <span class="nav-label">Risk Guardrails</span>
+                </button>
+            </nav>
+
+            <!-- Sidebar Footer (Admin Profile & Settings) -->
+            <div class="sidebar-footer">
+                <div class="user-profile">
+                    <div class="user-avatar">M</div>
+                    <div class="user-info">
+                        <span class="user-name">mahum</span>
+                        <span class="user-role"><span class="status-dot"></span> Operator Online</span>
+                    </div>
+                </div>
+                <button id="btn-logout" class="sidebar-logout-btn" title="Terminate active session">
+                    Sign Out
+                </button>
+            </div>
+        </aside>
+
+        <!-- RIGHT MAIN CONTENT WORKSPACE -->
+        <div class="app-workspace">
+            <!-- Header Top Bar -->
+            <header class="app-topbar" id="app-topbar">
+                <div class="topbar-left">
+                    <span id="page-header-title" style="display: none;"></span>
+                    
+                    <!-- Chart Controls (Visible on Live Charts page: ONLY Symbol Select + Timeframes) -->
+                    <div class="chart-controls-wrapper" id="chart-controls-wrapper" style="display: none;">
+                        <!-- Symbol Selector -->
+                        <div class="symbol-selector" id="symbol-selector">
+                            <select id="symbol-select" class="chart-symbol-select" aria-label="Select Coin">
+                                <option value="BTCUSDT">BTC / USDT</option>
+                                <option value="HYPEUSDT">HYPE / USDT</option>
+                                <option value="TAOUSDT">TAO / USDT</option>
+                                <option value="LTCUSDT">LTC / USDT</option>
+                                <option value="AVAXUSDT">AVAX / USDT</option>
+                                <option value="NEARUSDT">NEAR / USDT</option>
+                                <option value="SUIUSDT">SUI / USDT</option>
+                                <option value="SOLUSDT">SOL / USDT</option>
+                            </select>
+                        </div>
+
+                        <!-- Timeframe Selector -->
+                        <div class="timeframe-selector" id="timeframe-selector">
+                            <button class="tf-btn" data-tf="1d" title="1D View Only (Trading Disabled)">1D</button>
+                            <button class="tf-btn" data-tf="4h" title="HTF 4H -> LTF 5M Active Trading">4H</button>
+                            <button class="tf-btn" data-tf="1h" title="HTF 1H -> LTF 1M Active Trading">1H</button>
+                            <button class="tf-btn active" data-tf="15m" title="HTF 15M -> LTF 1M Active Trading">15M</button>
+                            <button class="tf-btn" data-tf="5m" title="5M View Only (Trading Disabled)">5M</button>
+                            <button class="tf-btn" data-tf="1m">1M</button>
+                        </div>
+                        <span id="split-mode-badge" class="clean-mode-badge" style="margin-left: 8px; font-weight: 700; background: var(--color-up-bg); color: var(--color-up); border: 1px solid var(--color-up-border);">50/50 DUAL CHART ACTIVE</span>
+                    </div>
+                </div>
+
+                <!-- Right Side Quick Status Badges -->
+                <div class="topbar-right" id="topbar-right">
+                    <div class="topbar-badges-wrapper" id="topbar-badges-wrapper">
+                        <div class="quick-badge" title="Isolated Collateral Locked">
+                            <span id="badge-margin-mode">Margin: ISOLATED</span>
+                        </div>
+                        <div class="quick-badge" title="Active Trade Risk Percentage">
+                            <span>Risk:</span> <strong id="badge-risk-mode" class="text-up">1.0%</strong>
+                        </div>
+                        <div class="quick-badge" title="Open Risk vs Maximum Portfolio Ceiling">
+                            <span>Alloc:</span> <strong id="badge-open-risk" class="text-neutral">0.0% / Max 8%</strong>
+                        </div>
+                        <div class="quick-badge" title="Daily Circuit Breaker State">
+                            <span>Breaker:</span> <strong id="badge-cb-mode" class="text-up">OK</strong>
+                        </div>
+                        <div class="quick-badge" title="Macroeconomic News Window (CPI / FOMC / NFP)">
+                            <span>Macro:</span> <strong id="badge-news-mode" class="text-up">OK</strong>
+                        </div>
+                        <div class="quick-badge" id="badge-session-container" title="Session Volume & Toxic Hours Filter">
+                            <span>Session:</span> <strong id="badge-session-mode" class="text-up">LIQUID</strong>
+                        </div>
+                        <div class="quick-badge" id="badge-buffer-container" title="Anti-Wickout Stop Loss Buffer">
+                            <span>SL Buffer:</span> <strong id="badge-sl-buffer" class="text-up">0.12%</strong>
+                        </div>
+                        <div class="quick-badge" id="badge-order-type-container" title="Order Execution Type">
+                            <span>Exec:</span> <strong id="badge-order-type" class="text-neutral">LIMIT (GTX)</strong>
+                        </div>
+                    </div>
+                    <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle Light / Dark Theme">
+                        <span id="theme-btn-text">Dark Theme</span>
+                    </button>
+                    <!-- Legacy header button hook for compatibility -->
+                    <button id="btn-bot-toggle" class="bot-toggle-btn bot-on" style="display: none;">BOT: ON</button>
+                </div>
+            </header>
+
+            <!-- PAGES CONTAINER -->
+            <div class="pages-viewport">
+                <!-- ===================================================================
+                     PAGE 1: OVERVIEW & MASTER BOT CONTROLS
+                     =================================================================== -->
+                <div class="page-pane active" id="page-overview">
+                    <!-- BOT MASTER CONTROLLER STRIP (Solid, flat, no pulse animation, no em-dashes) -->
+                    <div class="bot-master-hero">
+                        <div class="hero-status-group">
+                            <div class="hero-status-pill" id="hero-status-pill">
+                                <span class="status-indicator-box"></span>
+                                <span id="hero-status-text">BOT ACTIVE : SCANNING 2 ASSETS</span>
+                            </div>
+                            <h2 class="hero-title">Algorithmic Execution Controller</h2>
+                            <p class="hero-subtitle">Manage automated order generation. When halted, incoming trade signals are blocked from execution while existing active positions remain supervised.</p>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div class="hero-actions-row">
+                            <button id="btn-turn-on-bot" class="hero-btn btn-turn-on" title="Activate algorithmic order execution">
+                                <span class="btn-main-label">Resume Execution</span>
+                            </button>
+
+                            <button id="btn-turn-off-bot" class="hero-btn btn-turn-off" title="Pause all new algorithmic trade entries">
+                                <span class="btn-main-label">Pause Execution</span>
+                            </button>
+
+                            <button id="btn-reset-breaker" class="hero-btn-sm" title="Reset Circuit Breaker">
+                                Reset Breaker
+                            </button>
+
+                            <button id="btn-discord-test" class="hero-btn-sm discord-hero-btn" title="Send Discord Webhook Test Card">
+                                Test Discord
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- FINANCIAL TELEMETRY DATA BAR (Contiguous dense strip, not separate row cards) -->
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <div class="metric-label">Account Balance</div>
+                            <div class="metric-value font-mono" id="dash-balance">$0.00</div>
+                            <div class="metric-sub" id="dash-peak">Binance Futures Wallet</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Realized Net PnL</div>
+                            <div class="metric-value font-mono text-up" id="dash-pnl">$0.00</div>
+                            <div class="metric-sub" id="dash-r-multiples">Total Return: +0.00R</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Win Rate</div>
+                            <div class="metric-value font-mono" id="dash-winrate">0.0%</div>
+                            <div class="metric-sub" id="dash-trade-counts">0 Won / 0 Lost (0 Total)</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Account Drawdown</div>
+                            <div class="metric-value font-mono text-up" id="dash-drawdown">0.00%</div>
+                            <div class="metric-sub" id="dash-throttle-status">Factor 3: Normal (1.0%)</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Capital Allocation</div>
+                            <div class="metric-value font-mono" id="dash-alloc">0.00%</div>
+                            <div class="metric-sub">Ceiling: 8.00% (Isolated)</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-label">Execution State</div>
+                            <div class="metric-value text-up" id="dash-bot-status">ONLINE</div>
+                            <div class="metric-sub" id="dash-breaker-status">Circuit Breaker: OK</div>
+                        </div>
+                    </div>
+
+                    <!-- RISK & ALLOCATION CONTROLS PANEL (Structured tabular layout, no bento grids) -->
+                    <div class="dashboard-card risk-config-card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span>Risk & Allocation Guardrails Controls</span>
+                                <span class="card-pill" id="risk-tuning-pill">FACTOR 3: ACTIVE</span>
+                            </div>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <span id="risk-status-feedback"></span>
+                                <button id="btn-save-risk-settings" class="btn-action-primary">
+                                    Apply Settings
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="risk-config-grid">
+                            <!-- Control 1: Drawdown Throttling On / Off -->
+                            <div class="risk-param-box">
+                                <div class="param-header-row">
+                                    <label class="param-box-label">Drawdown Throttling (Factor 3)</label>
+                                    <button id="btn-toggle-throttling" type="button" class="toggle-pill-btn active">
+                                        ENABLED
+                                    </button>
+                                </div>
+                                <p class="param-box-desc">
+                                    Reduces trade risk by 50% when drawdown reaches &ge; 8.0%. Toggle to enable or disable.
+                                </p>
+                                <div class="param-input-row">
+                                    <span class="param-input-label">Throttled Risk:</span>
+                                    <input type="number" id="input-throttled-risk" step="0.1" min="0.1" max="5.0" value="0.5" class="clean-number-input" />
+                                    <span class="param-unit">%</span>
+                                </div>
+                            </div>
+
+                            <!-- Control 2: Base Risk Per Trade -->
+                            <div class="risk-param-box">
+                                <div class="param-header-row">
+                                    <label class="param-box-label">Base Risk Per Trade</label>
+                                    <span id="badge-active-risk-val" class="font-mono text-up">3.00%</span>
+                                </div>
+                                <p class="param-box-desc">
+                                    Base percentage of total account equity allocated to risk on each new position.
+                                </p>
+                                <div class="param-input-row">
+                                    <input type="number" id="input-normal-risk" step="0.1" min="0.1" max="10.0" value="3.0" class="clean-number-input" style="flex: 1;" />
+                                    <div class="preset-btn-group">
+                                        <button type="button" class="risk-preset-btn" data-val="1.0">1.0%</button>
+                                        <button type="button" class="risk-preset-btn" data-val="2.0">2.0%</button>
+                                        <button type="button" class="risk-preset-btn active" data-val="3.0">3.0%</button>
+                                        <button type="button" class="risk-preset-btn" data-val="4.0">4.0%</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Control 3: Max Capital Allocation Ceiling -->
+                            <div class="risk-param-box">
+                                <div class="param-header-row">
+                                    <label class="param-box-label">Max Capital Allocation</label>
+                                    <span id="badge-active-alloc-val" class="font-mono text-neutral">20.00%</span>
+                                </div>
+                                <p class="param-box-desc">
+                                    Upper risk ceiling permitted across all concurrent active open trades.
+                                </p>
+                                <div class="param-input-row">
+                                    <input type="number" id="input-max-alloc" step="0.5" min="1.0" max="50.0" value="20.0" class="clean-number-input" style="flex: 1;" />
+                                    <div class="preset-btn-group">
+                                        <button type="button" class="alloc-preset-btn" data-val="10.0">10%</button>
+                                        <button type="button" class="alloc-preset-btn" data-val="15.0">15%</button>
+                                        <button type="button" class="alloc-preset-btn active" data-val="20.0">20%</button>
+                                        <button type="button" class="alloc-preset-btn" data-val="25.0">25%</button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Control 4: Toxic Hours & Session Volume Filter -->
+                            <div class="risk-param-box">
+                                <div class="param-header-row">
+                                    <label class="param-box-label">Toxic Hours Filter</label>
+                                    <button id="btn-toggle-session-filter" type="button" class="toggle-pill-btn active">
+                                        ENABLED
+                                    </button>
+                                </div>
+                                <p class="param-box-desc">
+                                    Blocks executions during low-liquidity toxic windows: 18:00 to 21:00 UTC (US Close) and 01:00 to 03:00, 05:00 UTC (Asian Drag).
+                                </p>
+                                <div class="param-input-row">
+                                    <span class="param-input-label">Blocked UTC Hours:</span>
+                                    <span class="blocked-hours-tag">[01, 02, 05, 18, 19, 20]</span>
+                                </div>
+                            </div>
+
+                            <!-- Control 5: Stop-Loss ATR Buffer (Anti-Wickout Protection) -->
+                            <div class="risk-param-box">
+                                <div class="param-header-row">
+                                    <label class="param-box-label">SL Buffer (Anti-Wickout)</label>
+                                    <button id="btn-toggle-sl-buffer" type="button" class="toggle-pill-btn active">
+                                        ENABLED
+                                    </button>
+                                </div>
+                                <p class="param-box-desc">
+                                    Adds a protective buffer behind swing pivots to prevent micro-spread wickouts.
+                                </p>
+                                <div class="param-input-row">
+                                    <span class="param-input-label">Buffer Pct:</span>
+                                    <input type="number" id="input-sl-buffer-pct" step="0.01" min="0.02" max="1.0" value="0.12" class="clean-number-input" />
+                                    <span class="param-unit">%</span>
+                                </div>
+                            </div>
+
+                            <!-- Control 6: Order Execution Type -->
+                            <div class="risk-param-box">
+                                <div class="param-header-row">
+                                    <label class="param-box-label">Order Execution Type</label>
+                                    <span id="badge-active-order-type" class="text-neutral">POST-ONLY LIMIT</span>
+                                </div>
+                                <p class="param-box-desc">
+                                    Post-Only LIMIT (GTX) eliminates slippage and earns maker fee rebates. MARKET pays taker fees.
+                                </p>
+                                <div class="param-input-row">
+                                    <select id="select-order-exec-type" class="clean-select-input" style="width: 100%;">
+                                        <option value="LIMIT">POST-ONLY LIMIT (GTX - 0 Slippage)</option>
+                                        <option value="MARKET">MARKET ORDER (Taker + Slippage)</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- BINANCE FUTURES LIVE EXECUTION GATEWAY -->
+                    <div class="dashboard-card binance-card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span>Binance USDT-M Futures Execution Gateway</span>
+                                <span class="card-pill" id="binance-mode-pill">MODE: PAPER</span>
+                            </div>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <span id="binance-status-indicator" class="text-up font-mono">Paper Simulation Active</span>
+                                <button class="btn-action-sm" id="btn-test-binance" title="Ping Binance API and fetch live balance">Test Connection</button>
+                            </div>
+                        </div>
+                        
+                        <div class="binance-config-body">
+                            <div class="form-group">
+                                <label class="input-field-label">Execution Mode</label>
+                                <select id="binance-mode-input" class="clean-select-input">
+                                    <option value="PAPER">PAPER (Simulation - Safe)</option>
+                                    <option value="TESTNET">TESTNET (Binance Testnet)</option>
+                                    <option value="LIVE">LIVE (Real Binance Futures)</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label class="input-field-label">Binance API Key</label>
+                                <input type="text" id="binance-key-input" placeholder="Paste API Key (Futures Enabled)..." class="clean-text-input" autocomplete="off" autocorrect="off" spellcheck="false" />
+                            </div>
+                            <div class="form-group">
+                                <label class="input-field-label">Binance API Secret</label>
+                                <input type="password" id="binance-secret-input" placeholder="Paste API Secret..." class="clean-text-input" autocomplete="new-password" autocorrect="off" spellcheck="false" />
+                            </div>
+                            <button id="btn-save-binance" class="btn-action-primary" style="height: 36px; padding: 0 16px;">
+                                Save & Connect
+                            </button>
+                        </div>
+
+                        <!-- Security & Order Flow Details -->
+                        <div class="binance-footer-meta">
+                            <div style="display: flex; gap: 16px;">
+                                <span>Margin: <strong class="text-up">ISOLATED Only</strong></span>
+                                <span>Orders: <strong class="text-up">Market/Limit Entry + Stop-Market + Take-Profit</strong></span>
+                                <span>Withdrawals: <strong class="text-up">Disabled (Required)</strong></span>
+                            </div>
+                            <div id="binance-balance-display">
+                                Futures USDT Balance: <strong id="binance-usdt-balance" class="font-mono">$0.00 USDT</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- TWO-COLUMN SECTION: MACRO CALENDAR WIDGET & ACTIVE TRADES -->
+                    <div class="overview-dual-grid">
+                        <!-- UPCOMING MACRO EVENTS CALENDAR WIDGET -->
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <div class="card-title">
+                                    <span>Upcoming Macroeconomic Events</span>
+                                    <span class="card-pill" id="macro-hero-badge">Next: NFP</span>
+                                </div>
+                                <button class="btn-action-sm" id="btn-view-all-events">View Calendar</button>
+                            </div>
+                            <div class="calendar-widget-sub" id="calendar-widget-countdown">
+                                Next Window Countdown: <strong>Calculating...</strong>
+                            </div>
+                            <div class="data-table-wrapper" style="max-height: 280px;">
+                                <table class="data-table" id="overview-macro-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Time (UTC)</th>
+                                            <th>Event</th>
+                                            <th>Impact</th>
+                                            <th>Countdown</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="overview-macro-body">
+                                        <tr>
+                                            <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 20px;">Loading macroeconomic schedule...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <!-- LIVE ACTIVE POSITIONS CARD -->
+                        <div class="dashboard-card">
+                            <div class="card-header">
+                                <div class="card-title">
+                                    <span>Live Active Positions</span>
+                                    <span id="active-pos-count" class="card-pill">0 Active</span>
+                                </div>
+                            </div>
+                            <div class="data-table-wrapper" style="max-height: 310px;">
+                                <table class="data-table" id="active-positions-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Symbol</th>
+                                            <th>Side</th>
+                                            <th>Entry Price</th>
+                                            <th>Stop Loss</th>
+                                            <th>Take Profit</th>
+                                            <th>Leverage</th>
+                                            <th>Margin</th>
+                                            <th>Risk</th>
+                                            <th>Est. Liq</th>
+                                            <th>Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="active-positions-body">
+                                        <tr>
+                                            <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 24px;">No active open trades right now. Engine is scanning market structure.</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===================================================================
+                     PAGE 2: LIVE CHARTS
+                     =================================================================== -->
+                <div class="page-pane" id="page-charts">
+                    <div id="charts-view" style="display: flex; flex: 1; height: 100%; width: 100%; overflow: hidden;">
+                        <!-- Left Drawing Toolbar (Text buttons, no Lucide SVGs) -->
+                        <aside class="drawing-toolbar" id="drawing-toolbar">
+                            <button class="draw-tool-btn active" id="tool-cursor" title="Select / Move / Resize (V)">
+                                <span class="tool-label-text">PTR</span>
+                            </button>
+                            <button class="draw-tool-btn" id="tool-box" title="Draw Box / Rectangle (B)">
+                                <span class="tool-label-text">BOX</span>
+                            </button>
+                            <button class="draw-tool-btn" id="tool-trendline" title="Draw Trendline (T)">
+                                <span class="tool-label-text">LINE</span>
+                            </button>
+                            <div class="tool-separator"></div>
+                            <button class="draw-tool-btn" id="tool-clear-all" title="Clear All Drawings">
+                                <span class="tool-label-text">CLR</span>
+                            </button>
+                        </aside>
+
+                        <main id="main-content">
+                            <!-- Lower Timeframe 5M Chart Pane (Left Side - Opens on Double-Click) -->
+                            <div id="split-ltf-container" class="split-pane collapsed" style="display: none;">
+                                <div class="pane-header">
+                                    <div class="pane-title-group">
+                                        <span class="ltf-badge" id="ltf-title">BTCUSDT | 5M (LTF Breakdown)</span>
+                                        <span class="ltf-date-tag" id="ltf-target-date">Double-click candle to inspect M5</span>
+                                        <div class="signal-nav-controls" id="signal-nav-controls" style="display: none;">
+                                            <button id="btn-prev-signal" class="sig-nav-btn" title="Previous Signal (Backtest)">PREV</button>
+                                            <span id="signal-counter-badge" class="sig-counter-pill font-mono">0/0</span>
+                                            <button id="btn-next-signal" class="sig-nav-btn" title="Next Signal (Backtest)">NEXT</button>
+                                        </div>
+                                    </div>
+                                    <div class="ohlc-legend" id="ltf-ohlc-legend"></div>
+                                    <button id="btn-close-split" class="close-split-btn" title="Close LTF panel and return to single view"><span style="font-weight: 900; font-size: 13px; line-height: 1;">✕</span> CLOSE</button>
+                                </div>
+                                                                <!-- Interactive Trade Logic & Decision Checklist HUD -->
+                                <div id="ltf-trade-logic-hud" class="trade-logic-hud">
+                                    <div class="logic-steps-wrapper">
+                                        <div class="logic-step-card" id="logic-step-1">
+                                            <span class="step-badge">1. TAP</span>
+                                            <span class="step-text" id="hud-tap-text">Zone Tapped</span>
+                                        </div>
+                                        <span class="logic-step-arrow">➔</span>
+                                        <div class="logic-step-card" id="logic-step-2">
+                                            <span class="step-badge">2. RACE</span>
+                                            <span class="step-text" id="hud-race-text">Wait CHoCH / 5W</span>
+                                        </div>
+                                        <span class="logic-step-arrow">➔</span>
+                                        <div class="logic-step-card" id="logic-step-3">
+                                            <span class="step-badge">3. LEVELS</span>
+                                            <span class="step-text" id="hud-levels-text">Pending Winner</span>
+                                        </div>
+                                        <span class="logic-step-arrow">➔</span>
+                                        <div class="logic-step-card" id="logic-step-4">
+                                            <span class="step-badge">4. CONFIRM</span>
+                                            <span class="step-text" id="hud-conf-text">Engulfing / Star</span>
+                                        </div>
+                                    </div>
+                                    <div class="logic-decision-wrapper">
+                                        <span class="logic-decision-badge" id="hud-decision-badge">NO TRADE YET</span>
+                                        <span class="logic-decision-reason" id="hud-decision-reason">Waiting for CHoCH break or 5 internal waves</span>
+                                        <button id="btn-hud-inspect" class="btn-hud-inspect" title="Inspect Why Algo Took or Skipped Trade">🔍 Discrepancy Card</button>
+                                    </div>
+                                </div>
+                                <!-- Signal Details & Backtest Telemetry Strip -->
+                                <div id="ltf-signal-telemetry" class="signal-telemetry-bar">
+                                    <span id="tel-type-badge" class="tel-badge-sig buy">M5 STRUCTURE</span>
+                                    <span id="tel-entry" class="tel-item">HTF: <b>Selected</b></span>
+                                    <span id="tel-sl" class="tel-item tel-sl">LTF: <b>M5 (5 Minute)</b></span>
+                                    <span id="tel-tp" class="tel-item tel-tp">Structure: <b>M5 BOS / CHoCH Active</b></span>
+                                    <span id="tel-pattern" class="tel-item tel-pat">Levels: <b>M5 TJL Supply & Demand</b></span>
+                                    <span id="tel-outcome" class="tel-item tel-out">Status: <b>M5 BREAKDOWN</b></span>
+                                    <span id="tel-box" class="tel-item tel-box">Details: <b>Displaying M5 market structure around candle</b></span>
+                                </div>
+                                <div id="ltf-chart" class="pane-chart">
+                                    <canvas id="ltf-overlay-canvas"></canvas>
+                                    <div id="ltf-bottom-time-pill" class="bottom-time-scale-pill"></div>
+                                    <button id="btn-floating-close-ltf" class="floating-ltf-close-btn" title="Close LTF chart (Return to Single Chart)">✕ Close LTF</button>
+                                </div>
+                            </div>
+
+                            <!-- Higher Timeframe Chart Pane (Normal 100% Full Width Initially, shifts to Right 50% on Double-Click) -->
+                            <div id="chart-container" class="split-pane full-width">
+                                <div class="pane-header htf-header">
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        <span class="htf-badge" id="htf-title">BTCUSDT | 1D</span>
+                                        <span class="clean-mode-badge" id="structure-status-badge" title="Market Structure Mapping">STRUCTURE: BOS / CHOCH / TJL</span>
+                                        <span class="clean-mode-badge" id="structure-trend-badge">UPTREND</span>
+                                        <span class="clean-mode-badge" id="double-click-hint" style="color: var(--color-up); border-color: var(--color-up-border); font-weight: 700;">DOUBLE-CLICK ANY CANDLE FOR H1 BREAKDOWN</span>
+                                        <button id="btn-d1-h1-transition" class="clean-mode-badge" style="display: none; cursor: pointer;" title="Zone tapped">ZONE TAPPED</button>
+                                    </div>
+                                    <div class="algo-trades-subbar" id="algo-trades-subbar">
+                                        <span class="algo-subbar-title">⚡ BOT TRADES:</span>
+                                        <div class="signals-quick-strip" id="signals-quick-strip"></div>
+                                    </div>
+                                    <div class="ohlc-legend" id="htf-ohlc-legend"></div>
+                                </div>
+                                <div id="htf-chart-inner" class="pane-chart">
+                                    <canvas id="overlay-canvas"></canvas>
+                                    <div id="htf-bottom-time-pill" class="bottom-time-scale-pill"></div>
+
+                                </div>
+                            </div>
+                        </main>
+                    </div>
+                </div>
+
+                <!-- ===================================================================
+                     PAGE 3: MACRO ECONOMIC CALENDAR (FULL SCHEDULE)
+                     =================================================================== -->
+                <div class="page-pane" id="page-calendar">
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span>Master Macroeconomic Schedule</span>
+                                <span class="card-pill">Official 2025 to 2027 Calendar</span>
+                            </div>
+                            <div class="event-filter-group">
+                                <button class="filter-btn active" data-filter="ALL">All Events</button>
+                                <button class="filter-btn" data-filter="CPI">CPI Releases</button>
+                                <button class="filter-btn" data-filter="FOMC">FOMC Rate Decisions</button>
+                                <button class="filter-btn" data-filter="NFP">NFP Reports</button>
+                            </div>
+                        </div>
+                        <p style="font-size: 13px; color: var(--text-secondary); margin-top: -6px; line-height: 1.5;">
+                            Order execution is automatically suspended during high-impact US macroeconomic releases (&plusmn;2.5 hour blackout buffer) to avoid extreme volatility spreads.
+                        </p>
+                        <div class="data-table-wrapper" style="max-height: 600px;">
+                            <table class="data-table" id="full-macro-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>Release Time</th>
+                                        <th>Event Type</th>
+                                        <th>Description</th>
+                                        <th>Blackout Buffer</th>
+                                        <th>Time Remaining</th>
+                                        <th>Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="full-macro-body">
+                                    <tr>
+                                        <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 24px;">Loading full macroeconomic schedule...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===================================================================
+                     PAGE 4: TRADE LEDGER & CLOSED HISTORY
+                     =================================================================== -->
+                <div class="page-pane" id="page-history">
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span>Execution & Closed Trade Ledger</span>
+                                <span id="closed-trades-count" class="card-pill">0 Trades</span>
+                            </div>
+                            <button id="btn-refresh-history" class="btn-action-sm">Refresh Ledger</button>
+                        </div>
+                        <div class="data-table-wrapper" style="max-height: 620px;">
+                            <table class="data-table" id="history-table">
+                                <thead>
+                                    <tr>
+                                        <th>Date / Time</th>
+                                        <th>Symbol</th>
+                                        <th>Side</th>
+                                        <th>Entry Price</th>
+                                        <th>Exit Price</th>
+                                        <th>Outcome</th>
+                                        <th>R-Multiple</th>
+                                        <th>Net PnL</th>
+                                        <th>Balance</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="history-body">
+                                    <tr>
+                                        <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 24px;">No historical closed trades recorded yet.</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ===================================================================
+                     PAGE 5: RISK & PROTECTION GUARDRAILS (TABLE MATRIX, NO BENTO GRIDS)
+                     =================================================================== -->
+                <div class="page-pane" id="page-risk">
+                    <div class="dashboard-card">
+                        <div class="card-header">
+                            <div class="card-title">
+                                <span>Institutional Risk Guardrails Matrix</span>
+                                <span class="card-pill">6 Active Controls</span>
+                            </div>
+                        </div>
+                        <div class="data-table-wrapper">
+                            <table class="data-table" id="guardrails-matrix-table">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 220px;">Guardrail Parameter</th>
+                                        <th style="width: 100px;">Status</th>
+                                        <th style="width: 200px;">Enforcement Rule</th>
+                                        <th>Operational Protection Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><strong id="card-risk-name">Dynamic 1.0% Risk Model</strong></td>
+                                        <td><span class="guardrail-status-pill status-ok" id="card-risk-status">ACTIVE</span></td>
+                                        <td><code>Equity Risk Sizing</code></td>
+                                        <td id="card-risk-desc">Strictly calculates dollar risk based on user-configured percentage of current equity. Position size and leverage are derived backward from the Stop Loss distance.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Factor 3: Drawdown Throttling</strong></td>
+                                        <td><span class="guardrail-status-pill status-ok" id="card-throttle-status">ACTIVE</span></td>
+                                        <td><code>Drawdown &ge; 8.0% : Halve Risk</code></td>
+                                        <td id="card-throttle-desc">If account drawdown from all-time peak equity reaches &ge; 8.0%, risk is automatically halved to throttled risk until a new all-time high is established.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong id="card-alloc-name">Max Capital Allocation</strong></td>
+                                        <td><span class="guardrail-status-pill status-ok">ACTIVE</span></td>
+                                        <td><code>Max 20.0% Portfolio Ceiling</code></td>
+                                        <td id="card-alloc-desc">Total aggregate open risk across all simultaneous trades cannot exceed the configured ceiling. Any new trade that would breach this ceiling is rejected.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Strict Isolated Margin</strong></td>
+                                        <td><span class="guardrail-status-pill status-ok">ENFORCED</span></td>
+                                        <td><code>ISOLATED (Cross Prohibited)</code></td>
+                                        <td>Cross margin is permanently blocked. Each trade is isolated to its own margin wallet. Liquidation prices are calculated to sit far beyond the Stop Loss.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Daily Circuit Breaker</strong></td>
+                                        <td><span class="guardrail-status-pill status-ok">MONITORED</span></td>
+                                        <td><code>-10.0% Daily Loss Limit</code></td>
+                                        <td>If daily loss reaches the configured kill switch limit, the bot automatically trips the circuit breaker and halts entries until 00:00 UTC.</td>
+                                    </tr>
+                                    <tr>
+                                        <td><strong>Funding Rate Filter</strong></td>
+                                        <td><span class="guardrail-status-pill status-ok">ARMED</span></td>
+                                        <td><code>&plusmn;0.08% / 8h Threshold</code></td>
+                                        <td>Blocks Long entries if 8h funding rate &ge; +0.08% (preventing carrying decay & long squeezes). Blocks Shorts if funding &le; -0.08% (preventing short squeezes).</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating Drawing Property Toolbar (Clean text buttons, no Lucide SVGs) -->
+    <div id="drawing-floating-bar" class="drawing-property-bar" style="display: none;">
+        <div class="prop-group">
+            <div class="color-palette" id="prop-color-palette">
+                <button class="color-dot active" data-color="#2563eb" style="background: #2563eb;"></button>
+                <button class="color-dot" data-color="#10b981" style="background: #10b981;"></button>
+                <button class="color-dot" data-color="#ef4444" style="background: #ef4444;"></button>
+                <button class="color-dot" data-color="#475569" style="background: #475569;"></button>
+                <button class="color-dot" data-color="#ffffff" style="background: #ffffff;"></button>
+            </div>
+        </div>
+        <div class="prop-group" id="prop-bg-group">
+            <span class="prop-label">Fill</span>
+            <select id="prop-bg-opacity" class="prop-select">
+                <option value="0.0">None</option>
+                <option value="0.15">15%</option>
+                <option value="0.25" selected>25%</option>
+                <option value="0.4">40%</option>
+                <option value="0.65">65%</option>
+            </select>
+        </div>
+        <div class="prop-group">
+            <span class="prop-label">Width</span>
+            <select id="prop-line-width" class="prop-select">
+                <option value="1">1px</option>
+                <option value="1.5" selected>1.5px</option>
+                <option value="2">2px</option>
+                <option value="3">3px</option>
+                <option value="4">4px</option>
+            </select>
+        </div>
+        <div class="prop-group">
+            <span class="prop-label">Style</span>
+            <select id="prop-line-style" class="prop-select">
+                <option value="solid" selected>Solid</option>
+                <option value="dashed">Dashed</option>
+            </select>
+        </div>
+        <div class="prop-group text-group">
+            <input type="text" id="prop-text-input" class="prop-input" placeholder="Text label..." />
+        </div>
+        <div class="prop-separator"></div>
+        <button id="prop-delete-btn" class="prop-icon-btn delete-btn" title="Delete drawing (Del)">DEL</button>
+        <button id="prop-close-btn" class="prop-icon-btn close-btn" title="Deselect">&times;</button>
+    </div>
+
+    <!-- Hidden tab elements for backward compatibility -->
+    <div style="display: none;">
+        <button id="tab-charts"></button>
+        <button id="tab-dashboard"></button>
+        <div id="dashboard-view"></div>
+    </div>
+
+    
+    <script src="/static/app.js?v=5004"></script>
+</body>
+</html>
