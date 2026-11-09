@@ -1535,15 +1535,7 @@ def scan_ltf_trade_entry(
 
         if is_bullish:
 
-            if is_valid_bullish_engulfing(c_prev, c_curr) or (
-
-                c_curr["close"] > c_curr["open"] and
-
-                c_prev["close"] <= c_prev["open"] + 1.0 and
-
-                c_curr["close"] >= c_prev["open"]
-
-            ):
+            if is_valid_bullish_engulfing(c_prev, c_curr):
 
                 pattern_name = "Bullish Engulfing"
 
@@ -1551,15 +1543,7 @@ def scan_ltf_trade_entry(
 
         else:
 
-            if is_valid_bearish_engulfing(c_prev, c_curr) or (
-
-                c_curr["close"] < c_curr["open"] and
-
-                c_prev["close"] >= c_prev["open"] - 1.0 and
-
-                c_curr["close"] <= c_prev["open"]
-
-            ):
+            if is_valid_bearish_engulfing(c_prev, c_curr):
 
                 pattern_name = "Bearish Engulfing"
 

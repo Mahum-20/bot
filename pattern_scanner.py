@@ -24,29 +24,31 @@ def get_target_ltf(htf_interval: str) -> Optional[str]:
 
 def is_valid_bullish_engulfing(c1: Dict, c2: Dict) -> bool:
     """
-    Bullish Engulfing:
+    Bullish Engulfing (Aligned 1:1 with Reversal Candlestick Patterns.pine):
     - 1st Candle: Red (bearish) or Doji (close <= open).
     - 2nd Candle: Green (bullish, close > open).
     - High Condition: The high of the 2nd candle must be higher than the high of the 1st candle.
-    - Low Condition: No specific requirement for the low of the 2nd candle.
+    - Body Condition: The close of the 2nd candle must be at or above the open of the 1st candle.
     """
     is_red_or_doji_1 = c1["close"] <= c1["open"]
     is_green_2 = c2["close"] > c2["open"]
     high_cond = c2["high"] > c1["high"]
-    return is_red_or_doji_1 and is_green_2 and high_cond
+    body_cond = c2["close"] >= c1["open"]
+    return is_red_or_doji_1 and is_green_2 and high_cond and body_cond
 
 def is_valid_bearish_engulfing(c1: Dict, c2: Dict) -> bool:
     """
-    Bearish Engulfing:
+    Bearish Engulfing (Aligned 1:1 with Reversal Candlestick Patterns.pine):
     - 1st Candle: Green (bullish) or Doji (close >= open).
     - 2nd Candle: Red (bearish, close < open).
     - Low Condition: The low of the 2nd candle must be lower than the low of the 1st candle.
-    - High Condition: No specific requirement for the high of the 2nd candle.
+    - Body Condition: The close of the 2nd candle must be at or below the open of the 1st candle.
     """
     is_green_or_doji_1 = c1["close"] >= c1["open"]
     is_red_2 = c2["close"] < c2["open"]
     low_cond = c2["low"] < c1["low"]
-    return is_green_or_doji_1 and is_red_2 and low_cond
+    body_cond = c2["close"] <= c1["open"]
+    return is_green_or_doji_1 and is_red_2 and low_cond and body_cond
 
 def is_non_doji(c: Dict, min_body_ratio: float = 0.25) -> bool:
     """Checks that the candle body is substantial (not a Doji)."""
