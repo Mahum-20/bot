@@ -933,16 +933,29 @@ def detect_internal_5_waves(
 
 
 
-def is_valid_tap_approach(box: Dict, candles: List[Dict], idx: int) -> bool:
+def is_valid_tap_approach(box: Dict, candles: List[Dict], idx: int, require_outside_entry: bool = True) -> bool:
     """
-    Validates that a zone is tapped (candle intersects the zone boundary).
+    Validates a genuine fresh outside-to-inside zone tap event.
     Directional approach rules (Demand from above / Supply from below - MTF-003)
-    have been removed per user instruction.
+    remain removed per user instruction, but a fresh entry from outside is required:
+    - Current candle (idx) touches or penetrates the zone boundary.
+    - If require_outside_entry and idx > 0: Previous candle (idx - 1) must have been
+      completely outside the zone (above or below), ensuring price entered fresh.
     """
+    if not candles or idx < 0 or idx >= len(candles):
+        return False
     b_top = max(box.get("top", 0), box.get("bottom", 0))
     b_bot = min(box.get("top", 0), box.get("bottom", 0))
     c = candles[idx]
-    return c["low"] <= b_top and c["high"] >= b_bot
+    touches = (c["low"] <= b_top and c["high"] >= b_bot)
+    if not touches:
+        return False
+    if require_outside_entry and idx > 0:
+        c_prev = candles[idx - 1]
+        was_inside = (c_prev["high"] >= b_bot and c_prev["low"] <= b_top)
+        if was_inside:
+            return False
+    return True
 
 
 def find_tapped_htf_box(
@@ -961,7 +974,7 @@ def find_tapped_htf_box(
 
     Finds if any HTF box is tapped by the target candle or within its HTF parent bar.
 
-    Enforces that Demand zones can only be tapped from upside, and Supply zones can only be tapped from downside.
+    Enforces a genuine outside-to-inside tap event without directional restrictions.
 
     Returns (tapped_box, tap_ltf_index).
 

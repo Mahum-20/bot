@@ -35,16 +35,15 @@ An algorithmic trading bot implementing TopG institutional market structure rule
                       |       Price Action Confirmation       |
                       |  - Bullish / Bearish Engulfing        |
                       |  - Morning / Evening Star             |
-                      |  - Hammer & Inverted Hammer           |
                       +---------------------------------------+
                                           |
                                           v
                       +---------------------------------------+
                       |       Portfolio Risk & Execution      |
-                      |  - 1:3 Risk-to-Reward Ratio (RR)      |
+                      |  - Profile RR (4H 3R | 1H/15M >= 2.5R)|
                       |  - Dynamic 1% Account Risk Sizing     |
                       |  - 1-Trade-Per-Zone Permanent Lock    |
-                      |  - 10% Daily Drawdown Circuit Breaker |
+                      |  - 3.5% Daily Drawdown Breaker (3 Ls) |
                       +---------------------------------------+
                                           |
                                           v
@@ -75,7 +74,9 @@ An algorithmic trading bot implementing TopG institutional market structure rule
    - Once price taps an active zone from the valid approach direction, the bot monitors for an LTF reversal pattern within 120 candles.
 
 5. **Risk & Capital Preservation**:
-   - Fixed 1:3 Risk-to-Reward ratio on limit entry orders.
+   - Profile-specific Risk-to-Reward targets: Fixed 3R for 4H/M5; opposing liquidity target with >= 2.5R floor for 1H/M5 and 15M/M1.
+   - Dynamic 1% account risk sizing with minimum viable lot protection.
+   - 3.5% daily drawdown limit and 3 consecutive losses circuit breaker.
    - Intrabar stop-loss and take-profit monitoring with slippage and fee accounting.
 
 ---

@@ -6,8 +6,8 @@ the canonical TopG institutional methodology:
 - 500-Candle Rolling FIFO Lookback (ZONE-003)
 - Outside-In Zone Tap Detection (is_valid_tap_approach)
 - 120-Candle Reaction Cycle State Machine (ZONE-004)
-- Pure Price Action Reversal Confirmation (Engulfing, Morning/Evening Star, Hammer)
-- Strict 1:3 Risk-to-Reward Ratio (RISK-001)
+- Pure Price Action Reversal Confirmation (Engulfing, Morning/Evening Star)
+- Institutional Risk-to-Reward Ratio (4H 3R | 1H/15M >= 2.5R Opposing Liquidity Target)
 - Immutable 1-Trade-Per-Zone Registry Lock (RISK-003)
 - Zero FVG Logic (Completely Decoupled)
 """

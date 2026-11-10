@@ -37,7 +37,7 @@ from portfolio_risk_manager import portfolio_risk_engine, LOCKED_PORTFOLIO_COINS
 from timeframe_allocation_manager import timeframe_allocation_engine
 
 
-from ltf_approach_engine import compute_ltf_approach_structure
+from ltf_approach_engine import compute_ltf_approach_structure, is_valid_tap_approach
 from zone_trade_registry import zone_trade_registry
 
 
@@ -733,7 +733,7 @@ async def live_portfolio_monitor_task():
 
       3. Scans HTF structure (1000 bars) and closed 5m LTF candles via MTFStrategy (ZoneExecutionTracker).
 
-      4. Places SL behind the deepest extreme of the HTF zone touch and locks TP strictly at 2.5R.
+      4. Places SL at pattern extreme plus 0.5x ATR_15M cushion, and locks TP per profile model (4H fixed 3.0R, 1H/15M opposing liquidity >= 2.5R floor).
 
       5. Automatically executes Maker Limit Orders (LIMIT / Post-Only GTX).
 
@@ -1089,18 +1089,24 @@ async def live_portfolio_monitor_task():
 
 
 
-                        # Fetch HTF candles
+                        # Fetch HTF candles and strictly filter to only those confirmed closed on or before latest_closed_ltf_time
+                        recent_htf_raw = await loop.run_in_executor(None, fetch_klines_paginated, symbol, htf_tf, 1000, "futures")
 
-                        recent_htf = await loop.run_in_executor(None, fetch_klines_paginated, symbol, htf_tf, 1000, "futures")
-
-                        if not recent_htf or len(recent_htf) < 25:
-
+                        if not recent_htf_raw or len(recent_htf_raw) < 25:
                             continue
 
+                        htf_sec_val = INTERVAL_SECONDS.get(htf_tf.lower(), 14400)
+                        ltf_sec_val = INTERVAL_SECONDS.get(ltf_tf.lower(), 60)
 
+                        # Strictly exclude unclosed/forming HTF candle: closing time (open_time + htf_sec) must be <= LTF candle close
+                        recent_htf = [
+                            c for c in recent_htf_raw
+                            if (c["time"] + htf_sec_val) <= (latest_closed_ltf_time + ltf_sec_val)
+                        ]
+                        if not recent_htf or len(recent_htf) < 25:
+                            continue
 
                         # 1. Generate HTF structure strictly up to latest closed LTF time (Rolling 500-Candle Window - TradingView Model)
-                        htf_sec_val = INTERVAL_SECONDS.get(htf_tf.lower(), 14400)
                         recent_htf = recent_htf[-500:]
                         htf_engine_inst = HTFEngine(lookback_bars=min(500, len(recent_htf)), show_tjl_boxes=True, tjl_extend=True)
                         htf_res = htf_engine_inst.run(recent_htf)
@@ -1184,242 +1190,242 @@ async def live_portfolio_monitor_task():
                         if not active_cycles:
                             continue
 
-                        # Run localized LTF approach structure for active cycle
+                        # Run localized LTF approach structure for ALL active cycles
                         htf_sec_val = INTERVAL_SECONDS.get(htf_tf.lower(), 900)
-                        reg_key, cyc = active_cycles[0]
-                        init_tap_time = cyc["initial_tap_time"]
-                        target_box = cyc["box"]
-
-                        res = compute_ltf_approach_structure(
-                            target_time=init_tap_time,
-                            ltf_candles=closed_ltf,
-                            htf_boxes=available_htf_boxes,
-                            htf_sec=htf_sec_val,
-                            htf_candles=recent_htf,
-                            override_tap_time=init_tap_time,
-                            override_box=target_box,
-                            as_of_time=latest_closed_ltf_time
-                        )
-
-                        tap_info = res.get("tap_info")
-
-                        if not tap_info or not tap_info.get("trade"):
-
-                            continue
-
-
-
-                        box_name = str(tap_info.get("box_name", "")).upper()
-
-                        if "A+" in box_name:
-
-                            continue  # Filter out A+ (Dual CHoCH) per optimization
-
-
-
-                        tr = tap_info["trade"]
-
-                        if not tr.get("executed"):
-
-                            continue
-
-
-
-                        # Signal must have fired on the latest closed candle (or within the last closed bar)
-
-                        tr_time = tr.get("time")
-
-                        ltf_sec_val = INTERVAL_SECONDS.get(ltf_tf.lower(), 60)
-
-                        if abs(tr_time - latest_closed_ltf_time) > ltf_sec_val:
-
-                            continue
-
-
-
-                        sig_key = f"{symbol}_{htf_tf}_{tr_time}"
-
-                        if sig_key in processed_signals:
-
-                            continue
-
-
-
-                        t_type = tr["action"]
-
-                        is_bull = (t_type == "BUY")
-
-                        entry_p = tr["entry_price"]
-
-                        sl_p = tr["sl_price"]
-
-                        risk_dist = abs(entry_p - sl_p)
-
-                        if risk_dist <= 0:
-
-                            continue
-
-
-
-                        # Planned RR and TP calculation matching backtest exactly:
-
-                        # 4h -> 5m: Fixed 3.0R TP
-
-                        # 1h -> 1m & 15m -> 1m: Opposing HTF liquidity (min_rr = 2.5 floor)
-
-                        dec = 5 if entry_p < 50 else (3 if entry_p < 1000 else 2)
-
-                        if htf_tf.lower() == "4h":
-
-                            planned_rr = 3.0
-
-                            planned_reward = round(3.0 * risk_dist, dec)
-
-                            tp_p = round(entry_p + planned_reward if is_bull else entry_p - planned_reward, dec)
-
-                        else:
-
-                            tp_p = round(tr["tp_price"], dec)
-
-                            planned_reward = round(abs(tp_p - entry_p), dec)
-
-                            planned_rr = round(planned_reward / risk_dist, 2) if risk_dist > 0 else 0.0
-
-
-
-                        if planned_rr < (3.0 if htf_tf.lower() == "4h" else 2.5):
-
-                            continue
-
-
-
-                        pat_name = tr.get("pattern_name", "Reversal")
-
-                        matched_box_name = tap_info.get("box_name", "HTF Zone")
-
-                        t_id = f"{symbol[:4]}_{htf_tf}_{t_type}_{tr_time}"
-
-                        now_ts = int(time.time())
-
-
-
-                        eval_r = portfolio_risk_engine.evaluate_new_trade(
-
-                            symbol=symbol,
-
-                            entry_price=entry_p,
-
-                            sl_price=sl_p,
-
-                            tp_price=tp_p,
-
-                            planned_rr=planned_rr,
-
-                            trade_type=t_type,
-
-                            timestamp=now_ts,
-
-                            timeframe=htf_tf,
-
-                            sl_buffer_override=False
-
-                        )
-
-                        if eval_r.get("allowed"):
-
-                            open_r = portfolio_risk_engine.open_position(
-
-                                trade_id=t_id,
-
-                                symbol=symbol,
-
-                                trade_type=t_type,
-
-                                entry_price=entry_p,
-
-                                sl_price=sl_p,
-
-                                tp_price=tp_p,
-
-                                planned_rr=planned_rr,
-
-                                timestamp=now_ts,
-
-                                timeframe=htf_tf,
-
-                                sl_buffer_override=False
-
+                        for reg_key, cyc in active_cycles:
+                            init_tap_time = cyc["initial_tap_time"]
+                            target_box = cyc["box"]
+    
+                            res = compute_ltf_approach_structure(
+                                target_time=init_tap_time,
+                                ltf_candles=closed_ltf,
+                                htf_boxes=available_htf_boxes,
+                                htf_sec=htf_sec_val,
+                                htf_candles=recent_htf,
+                                override_tap_time=init_tap_time,
+                                override_box=target_box,
+                                as_of_time=latest_closed_ltf_time
                             )
-
-                            if open_r.get("allowed"):
-
-                                processed_signals.add(sig_key)
-
-                                # Record into ZONE_SINGLE_TRADE_REGISTRY (Strict 1 trade per level)
-
-                                matched_box = None
-
-                                for b in available_htf_boxes:
-
-                                    b_top = max(b.get("top", 0), b.get("bottom", 0))
-
-                                    b_bot = min(b.get("top", 0), b.get("bottom", 0))
-
-                                    if c_high >= b_bot and c_low <= b_top:
-
-                                        matched_box = b
-
-                                        break
-
-                                if matched_box:
-
-                                    b_id = f"{matched_box.get('text')}_{matched_box.get('left')}_{round(float(matched_box.get('top', 0)), 2)}_{round(float(matched_box.get('bottom', 0)), 2)}"
-
-                                    reg_key = f"{symbol}_{htf_tf}_{b_id}"
-
-                                    if reg_key in ZONE_CYCLE_REGISTRY:
-                            del ZONE_CYCLE_REGISTRY[reg_key]
-                        ZONE_SINGLE_TRADE_REGISTRY[reg_key] = {
-
-                                        "symbol": symbol,
-
-                                        "htf": htf_tf,
-
-                                        "ltf": ltf_tf,
-
-                                        "trade_id": t_id,
-
-                                        "entry_price": entry_p,
-
-                                        "sl_price": sl_p,
-
-                                        "tp_price": tp_p,
-
-                                        "rr": planned_rr,
-
-                                        "time": now_ts,
-
-                                        "level_name": matched_box_name,
-
-                                        "pattern": pat_name
-
-                                    }
-
-                                    save_zone_registry(ZONE_SINGLE_TRADE_REGISTRY)
-
-
-
-                                monitor_logger.info(
-
-                                    f"🚀 [AUTONOMOUS {htf_tf.upper()}->{ltf_tf.upper()} TopG Engine] LIVE Order Dispatched [{t_id}]: "
-
-                                    f"{symbol} {t_type} ({pat_name} @ {matched_box_name}) @ {entry_p} (SL: {sl_p}, TP: {tp_p}, RR: {planned_rr}R)"
-
+    
+                            tap_info = res.get("tap_info")
+    
+                            if not tap_info or not tap_info.get("trade"):
+    
+                                continue
+    
+    
+    
+                            box_name = str(tap_info.get("box_name", "")).upper()
+    
+                            if "A+" in box_name:
+    
+                                continue  # Filter out A+ (Dual CHoCH) per optimization
+    
+    
+    
+                            tr = tap_info["trade"]
+    
+                            if not tr.get("executed"):
+    
+                                continue
+    
+    
+    
+                            # Signal must have fired on the latest closed candle (or within the last closed bar)
+    
+                            tr_time = tr.get("time")
+    
+                            ltf_sec_val = INTERVAL_SECONDS.get(ltf_tf.lower(), 60)
+    
+                            if abs(tr_time - latest_closed_ltf_time) > ltf_sec_val:
+    
+                                continue
+    
+    
+    
+                            sig_key = f"{symbol}_{htf_tf}_{tr_time}"
+    
+                            if sig_key in processed_signals:
+    
+                                continue
+    
+    
+    
+                            t_type = tr["action"]
+    
+                            is_bull = (t_type == "BUY")
+    
+                            entry_p = tr["entry_price"]
+    
+                            sl_p = tr["sl_price"]
+    
+                            risk_dist = abs(entry_p - sl_p)
+    
+                            if risk_dist <= 0:
+    
+                                continue
+    
+    
+    
+                            # Planned RR and TP calculation matching backtest exactly:
+    
+                            # 4h -> 5m: Fixed 3.0R TP
+    
+                            # 1h -> 1m & 15m -> 1m: Opposing HTF liquidity (min_rr = 2.5 floor)
+    
+                            dec = 5 if entry_p < 50 else (3 if entry_p < 1000 else 2)
+    
+                            if htf_tf.lower() == "4h":
+    
+                                planned_rr = 3.0
+    
+                                planned_reward = round(3.0 * risk_dist, dec)
+    
+                                tp_p = round(entry_p + planned_reward if is_bull else entry_p - planned_reward, dec)
+    
+                            else:
+    
+                                tp_p = round(tr["tp_price"], dec)
+    
+                                planned_reward = round(abs(tp_p - entry_p), dec)
+    
+                                planned_rr = round(planned_reward / risk_dist, 2) if risk_dist > 0 else 0.0
+    
+    
+    
+                            if planned_rr < (3.0 if htf_tf.lower() == "4h" else 2.5):
+    
+                                continue
+    
+    
+    
+                            pat_name = tr.get("pattern_name", "Reversal")
+    
+                            matched_box_name = tap_info.get("box_name", "HTF Zone")
+    
+                            t_id = f"{symbol[:4]}_{htf_tf}_{t_type}_{tr_time}"
+    
+                            now_ts = int(time.time())
+    
+    
+    
+                            eval_r = portfolio_risk_engine.evaluate_new_trade(
+    
+                                symbol=symbol,
+    
+                                entry_price=entry_p,
+    
+                                sl_price=sl_p,
+    
+                                tp_price=tp_p,
+    
+                                planned_rr=planned_rr,
+    
+                                trade_type=t_type,
+    
+                                timestamp=now_ts,
+    
+                                timeframe=htf_tf,
+    
+                                sl_buffer_override=False
+    
+                            )
+    
+                            if eval_r.get("allowed"):
+    
+                                open_r = portfolio_risk_engine.open_position(
+    
+                                    trade_id=t_id,
+    
+                                    symbol=symbol,
+    
+                                    trade_type=t_type,
+    
+                                    entry_price=entry_p,
+    
+                                    sl_price=sl_p,
+    
+                                    tp_price=tp_p,
+    
+                                    planned_rr=planned_rr,
+    
+                                    timestamp=now_ts,
+    
+                                    timeframe=htf_tf,
+    
+                                    sl_buffer_override=False
+    
                                 )
-
-                                await broadcast_portfolio_update()
-
-                                trade_taken_for_symbol = True
+    
+                                if open_r.get("allowed"):
+    
+                                    processed_signals.add(sig_key)
+    
+                                    # Record into ZONE_SINGLE_TRADE_REGISTRY (Strict 1 trade per level)
+    
+                                    matched_box = None
+    
+                                    for b in available_htf_boxes:
+    
+                                        b_top = max(b.get("top", 0), b.get("bottom", 0))
+    
+                                        b_bot = min(b.get("top", 0), b.get("bottom", 0))
+    
+                                        if c_high >= b_bot and c_low <= b_top:
+    
+                                            matched_box = b
+    
+                                            break
+    
+                                    if matched_box:
+    
+                                        b_id = f"{matched_box.get('text')}_{matched_box.get('left')}_{round(float(matched_box.get('top', 0)), 2)}_{round(float(matched_box.get('bottom', 0)), 2)}"
+    
+                                        reg_key = f"{symbol}_{htf_tf}_{b_id}"
+    
+                                        if reg_key in ZONE_CYCLE_REGISTRY:
+                                            del ZONE_CYCLE_REGISTRY[reg_key]
+                                        ZONE_SINGLE_TRADE_REGISTRY[reg_key] = {
+    
+                                            "symbol": symbol,
+    
+                                            "htf": htf_tf,
+    
+                                            "ltf": ltf_tf,
+    
+                                            "trade_id": t_id,
+    
+                                            "entry_price": entry_p,
+    
+                                            "sl_price": sl_p,
+    
+                                            "tp_price": tp_p,
+    
+                                            "rr": planned_rr,
+    
+                                            "time": now_ts,
+    
+                                            "level_name": matched_box_name,
+    
+                                            "pattern": pat_name
+    
+                                        }
+    
+                                        save_zone_registry(ZONE_SINGLE_TRADE_REGISTRY)
+    
+    
+    
+                                    monitor_logger.info(
+    
+                                        f"🚀 [AUTONOMOUS {htf_tf.upper()}->{ltf_tf.upper()} TopG Engine] LIVE Order Dispatched [{t_id}]: "
+    
+                                        f"{symbol} {t_type} ({pat_name} @ {matched_box_name}) @ {entry_p} (SL: {sl_p}, TP: {tp_p}, RR: {planned_rr}R)"
+    
+                                    )
+    
+                                    await broadcast_portfolio_update()
+    
+                                    trade_taken_for_symbol = True
 
                                 break
 

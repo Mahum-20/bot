@@ -176,15 +176,15 @@ The strategy is a multi-timeframe system operating across three concurrent confi
   # Must NOT be A+ (Dual CHoCH)
   if "A+" in name:
       return False
-  # Must be one of the validated Top G institutional levels:
-  return any(k in name for k in [
-      "TJL1", "TJL 1",
-      "TJL2", "TJL 2",
-      "QML", "QUASIMODO",
-      "RBS", "SBR",
-      "DOUBLE TOP", "DOUBLE BOTTOM",
-      "LEVEL OF 3", "LEVEL OF 4"
-  ])
+  # Must be one of the validated Top G institutional HTF levels:
+  if "TJL1" in name or "TJL2" in name:
+      return True
+  if "QML" in name or "DOUBLE TOP" in name or "DOUBLE BOTTOM" in name:
+      return True
+  if ("SBR" in name or "RBS" in name) and box.get("in_dual_choch", False):
+      return True
+  # Note: 'Level of 3' and 'Level of 4' are LTF reaction levels created by the 5-Wave pathway, not HTF zones
+  return False
   ```
 - **Dependencies:** Zone created by `HTFEngine`.
 - **Action on Pass:** Zone is eligible to be tracked and tapped.
@@ -274,7 +274,7 @@ The strategy is a multi-timeframe system operating across three concurrent confi
 
 #### Rule `LTF-001`: The Race Condition (5-Wave Internal vs. Localized CHoCH)
 - **Source File & Function:** [`ltf_approach_engine.py:compute_ltf_approach_structure()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py#L2081-L2101)
-- **Required Timeframe:** LTF post-tap window (up to 240 bars)
+- **Required Timeframe:** LTF post-tap window (up to 120 bars)
 - **Mandatory / Optional:** Mandatory
 - **Logical Condition:**
   ```python
@@ -294,7 +294,7 @@ The strategy is a multi-timeframe system operating across three concurrent confi
 - **Action on Pass:** Establishes `cutoff_time` and active retest levels:
   - If 5-Wave wins: activates **Level of 3** and **Level of 4**.
   - If CHoCH wins: activates **QML**, **SBR/RBS**, **Double Top/Bottom**.
-- **Invalidation / Failure:** If neither pathway completes within 240 bars, setup expires without entry.
+- **Invalidation / Failure:** If neither pathway completes within 120 bars, setup expires without entry.
 
 #### Rule `LTF-002`: Internal 5-Wave Formation Criteria
 - **Source File & Function:** [`ltf_approach_engine.py:detect_internal_5_waves()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py#L43-L110)

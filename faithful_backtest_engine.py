@@ -83,6 +83,7 @@ class FaithfulBacktestEngine:
         self.current_utc_day = ""
         self.daily_start_balance = initial_balance
         self.daily_realized_pnl = 0.0
+        self.daily_consecutive_losses = 0
         self.circuit_breaker_active = False
 
     def _parse_tf_seconds(self, tf: str) -> int:
@@ -111,6 +112,7 @@ class FaithfulBacktestEngine:
             self.current_utc_day = day_str
             self.daily_start_balance = self.balance
             self.daily_realized_pnl = 0.0
+            self.daily_consecutive_losses = 0
             self.circuit_breaker_active = False
 
     def run_backtest(
@@ -218,6 +220,7 @@ class FaithfulBacktestEngine:
                         self.balance += pnl_usd
                         self.peak_equity = max(self.peak_equity, self.balance)
                         self.daily_realized_pnl += pnl_usd
+                        self.daily_consecutive_losses = 0
                         trades.append(active_position)
                         active_position = None
                         pos_closed = True
@@ -245,9 +248,10 @@ class FaithfulBacktestEngine:
 
                         self.balance += pnl_usd
                         self.daily_realized_pnl += pnl_usd
+                        self.daily_consecutive_losses += 1
 
-                        # Check daily circuit breaker
-                        if self.daily_start_balance > 0 and self.daily_realized_pnl <= -0.10 * self.daily_start_balance:
+                        # Check daily circuit breaker (Rule RISK-007: 3.5% daily loss or 3 consecutive losses)
+                        if (self.daily_start_balance > 0 and self.daily_realized_pnl <= -0.035 * self.daily_start_balance) or self.daily_consecutive_losses >= 3:
                             self.circuit_breaker_active = True
 
                         trades.append(active_position)
@@ -425,8 +429,17 @@ class FaithfulBacktestEngine:
 
                 # Position Sizing (Rule RISK-006)
                 risk_dollars = self.balance * self.risk_pct
-                pos_size = risk_dollars / risk_dist
-                pos_size = max(0.001, round(pos_size, 3))  # Clamped to BTC step size
+                ideal_pos_size = risk_dollars / risk_dist
+                min_step = 0.001 if 'BTC' in self.symbol.upper() else (0.01 if 'SOL' in self.symbol.upper() else 0.001)
+                pos_size = round(ideal_pos_size, 3)
+                if pos_size < min_step:
+                    pos_size = min_step
+                
+                # Rule RISK-006: Reject trade if minimum step size forces risk > 1.05x allowed risk budget
+                if (pos_size * risk_dist) > (risk_dollars * 1.05):
+                    ctx.record_rule("RISK-006", RuleStatus.FAIL, f"Minimum step {pos_size} risks ${(pos_size * risk_dist):.2f} > 1.05x budget ${risk_dollars:.2f}")
+                    self.trace_logger.log_context_completion(ctx)
+                    continue
 
                 notional = pos_size * entry_p
                 if self.balance <= 0 or (notional / 25.0) > self.balance:
