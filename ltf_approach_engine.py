@@ -456,51 +456,29 @@ def detect_internal_5_waves(
             elif state == 4:
 
                 if bearish_2rtr and wave_4_break_idx is not None and i > wave_4_break_idx:
-
+                    wave_5_confirm_time = c_curr["time"]
                     highs_5 = [candles[j]["high"] for j in range(wave_4_break_idx, i + 1)]
-
                     if highs_5:
-
                         peak_3_val = max(highs_5)
-
                         peak_3_idx = wave_4_break_idx + highs_5.index(peak_3_val)
-
                         wave_5_idx = peak_3_idx
-
                         waves.append({
-
                             "wave": 5,
-
                             "type": "peak",
-
                             "val": peak_3_val,
-
                             "bar": peak_3_idx,
-
                             "time": candles[peak_3_idx]["time"]
-
                         })
-
                     else:
-
                         wave_5_idx = i
-
                         waves.append({
-
                             "wave": 5,
-
                             "type": "peak",
-
                             "val": c_curr["close"],
-
                             "bar": i,
-
                             "time": c_curr["time"]
-
                         })
-
                     state = 5
-
                     break
 
 
@@ -543,7 +521,7 @@ def detect_internal_5_waves(
 
             "wave_5_idx": wave_5_idx,
 
-            "wave_5_time": candles[wave_5_idx]["time"] if wave_5_idx else None,
+            "wave_5_time": (wave_5_confirm_time if state == 5 else (candles[wave_5_idx]["time"] if wave_5_idx else None)),
 
             "waves": waves,
 
@@ -880,51 +858,29 @@ def detect_internal_5_waves(
             elif state == 4:
 
                 if bullish_2rtr and wave_4_break_idx is not None and i > wave_4_break_idx:
-
+                    wave_5_confirm_time = c_curr["time"]
                     lows_5 = [candles[j]["low"] for j in range(wave_4_break_idx, i + 1)]
-
                     if lows_5:
-
                         trough_3_val = min(lows_5)
-
                         trough_3_idx = wave_4_break_idx + lows_5.index(trough_3_val)
-
                         wave_5_idx = trough_3_idx
-
                         waves.append({
-
                             "wave": 5,
-
                             "type": "trough",
-
                             "val": trough_3_val,
-
                             "bar": trough_3_idx,
-
                             "time": candles[trough_3_idx]["time"]
-
                         })
-
                     else:
-
                         wave_5_idx = i
-
                         waves.append({
-
                             "wave": 5,
-
                             "type": "trough",
-
                             "val": c_curr["close"],
-
                             "bar": i,
-
                             "time": c_curr["time"]
-
                         })
-
                     state = 5
-
                     break
 
 
@@ -965,7 +921,7 @@ def detect_internal_5_waves(
 
             "wave_5_idx": wave_5_idx,
 
-            "wave_5_time": candles[wave_5_idx]["time"] if wave_5_idx else None,
+            "wave_5_time": (wave_5_confirm_time if state == 5 else (candles[wave_5_idx]["time"] if wave_5_idx else None)),
 
             "waves": waves,
 
@@ -1742,21 +1698,14 @@ def scan_ltf_trade_entry(
 
 
 def compute_ltf_approach_structure(
-
     target_time: int,
-
     ltf_candles: List[Dict],
-
     htf_boxes: List[Dict],
-
     htf_sec: int = 900,
-
     htf_candles: Optional[List[Dict]] = None,
-
     override_tap_time: Optional[int] = None,
-
-    override_box: Optional[Dict] = None
-
+    override_box: Optional[Dict] = None,
+    as_of_time: Optional[int] = None
 ) -> Dict:
 
     """
@@ -1777,8 +1726,14 @@ def compute_ltf_approach_structure(
 
     """
 
-    if not ltf_candles or len(ltf_candles) < 25 or not htf_boxes:
+    if as_of_time is not None and as_of_time > 0:
+        ltf_candles = [c for c in ltf_candles if c.get("time", 0) <= as_of_time]
+        if htf_candles:
+            htf_candles = [c for c in htf_candles if c.get("time", 0) <= as_of_time]
+        if htf_boxes:
+            htf_boxes = [b for b in htf_boxes if is_htf_box_active(b, as_of_time, htf_sec)]
 
+    if not ltf_candles or len(ltf_candles) < 25 or not htf_boxes:
         return {"lines": [], "boxes": [], "labels": [], "tap_info": None}
 
 
@@ -1811,7 +1766,7 @@ def compute_ltf_approach_structure(
 
     # allowing sufficient room for 5-wave internal structures and CHoCH reactions to complete
 
-    end_idx = min(len(ltf_candles), tap_idx + 240)
+    end_idx = min(len(ltf_candles), tap_idx + 120)
 
     trade_candles = ltf_candles[start_idx:end_idx]
 

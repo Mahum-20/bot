@@ -354,7 +354,8 @@ class FaithfulBacktestEngine:
                     htf_sec=self.htf_sec,
                     htf_candles=htf_history_slice,
                     override_tap_time=init_tap,
-                    override_box=target_b
+                    override_box=target_b,
+                    as_of_time=c_time
                 )
 
                 tap_info = res.get("tap_info")

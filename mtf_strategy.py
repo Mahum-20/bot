@@ -16,6 +16,7 @@ import bisect
 from typing import List, Dict, Tuple, Optional, Any
 from htf_engine import HTFEngine, is_htf_box_active
 from ltf_approach_engine import is_valid_tap_approach, compute_ltf_approach_structure
+from zone_trade_registry import zone_trade_registry
 
 
 class ZoneExecutionTracker:
@@ -143,7 +144,9 @@ class MTFStrategy:
             box_left = box_copy.get("left", 0)
 
             # Immutable zone key (Rule RISK-003)
-            zone_key = f"{box_name}_{box_left}_{b_top:.2f}_{b_bot:.2f}"
+            b_id = f"{box_name}_{box_left}_{b_top:.2f}_{b_bot:.2f}"
+            zone_key = b_id
+            reg_key = zone_trade_registry.get_zone_key("BTCUSDT", self.htf_interval, b_id)
 
             # Check if box is active per 500-candle lookback and invalidation
             if not is_htf_box_active(box_copy, current_time, htf_sec):
@@ -151,8 +154,10 @@ class MTFStrategy:
                 updated_boxes.append(box_copy)
                 continue
 
-            if zone_key in executed_zone_keys:
+            # Persistent 1-trade-per-zone lock check (Rule RISK-003)
+            if zone_trade_registry.is_zone_locked(reg_key) or zone_key in executed_zone_keys:
                 box_copy["status"] = "TRADED"
+                box_copy["trade_count"] = 1
                 updated_boxes.append(box_copy)
                 continue
 
@@ -183,7 +188,8 @@ class MTFStrategy:
                                     htf_sec=htf_sec,
                                     htf_candles=htf_candles,
                                     override_tap_time=cycle_tap_time,
-                                    override_box=box_copy
+                                    override_box=box_copy,
+                                    as_of_time=current_time
                                 )
                                 tap_info = res.get("tap_info")
                                 if tap_info and tap_info.get("trade"):

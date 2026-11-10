@@ -38,6 +38,7 @@ from timeframe_allocation_manager import timeframe_allocation_engine
 
 
 from ltf_approach_engine import compute_ltf_approach_structure
+from zone_trade_registry import zone_trade_registry
 
 
 
@@ -1196,7 +1197,8 @@ async def live_portfolio_monitor_task():
                             htf_sec=htf_sec_val,
                             htf_candles=recent_htf,
                             override_tap_time=init_tap_time,
-                            override_box=target_box
+                            override_box=target_box,
+                            as_of_time=latest_closed_ltf_time
                         )
 
                         tap_info = res.get("tap_info")

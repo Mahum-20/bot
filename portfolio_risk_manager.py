@@ -124,9 +124,16 @@ class PortfolioRiskManager:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     if "default_risk_pct" in data:
-                        self.config["normal_risk_pct"] = float(data["default_risk_pct"])
+                        # Hard ceiling of 2.0% (0.02) to prevent accidental excessive risk
+                        self.config["normal_risk_pct"] = max(0.001, min(0.02, float(data["default_risk_pct"])))
                     if "throttled_risk_pct" in data:
-                        self.config["throttled_risk_pct"] = float(data["throttled_risk_pct"])
+                        self.config["throttled_risk_pct"] = max(0.001, min(0.01, float(data["throttled_risk_pct"])))
+                    if "max_daily_loss_pct" in data:
+                        self.config["max_daily_loss_pct"] = max(0.01, min(0.05, float(data["max_daily_loss_pct"])))
+                    if "max_daily_consecutive_losses" in data:
+                        self.config["max_daily_consecutive_losses"] = max(1, min(5, int(data["max_daily_consecutive_losses"])))
+                    if "max_allowed_leverage" in data:
+                        self.config["max_allowed_leverage"] = max(1, min(25, int(data["max_allowed_leverage"])))
                     if "max_open_allocation_pct" in data:
                         self.config["max_open_capital_allocation"] = float(data["max_open_allocation_pct"])
                     if "drawdown_throttling_enabled" in data:
@@ -169,6 +176,8 @@ class PortfolioRiskManager:
         self,
         normal_risk_pct: Optional[float] = None,
         throttled_risk_pct: Optional[float] = None,
+        max_daily_loss_pct: Optional[float] = None,
+        max_daily_consecutive_losses: Optional[int] = None,
         max_open_capital_allocation: Optional[float] = None,
         drawdown_throttling_enabled: Optional[bool] = None,
         drawdown_throttle_threshold: Optional[float] = None,
@@ -182,9 +191,14 @@ class PortfolioRiskManager:
     ) -> Dict:
         """Updates and persists risk parameters to bot_config.json."""
         if normal_risk_pct is not None:
-            self.config["normal_risk_pct"] = max(0.001, min(0.10, float(normal_risk_pct)))
+            # Enforce hard ceiling of 2% even from API/dashboard
+            self.config["normal_risk_pct"] = max(0.001, min(0.02, float(normal_risk_pct)))
         if throttled_risk_pct is not None:
-            self.config["throttled_risk_pct"] = max(0.001, min(0.05, float(throttled_risk_pct)))
+            self.config["throttled_risk_pct"] = max(0.001, min(0.01, float(throttled_risk_pct)))
+        if max_daily_loss_pct is not None:
+            self.config["max_daily_loss_pct"] = max(0.01, min(0.05, float(max_daily_loss_pct)))
+        if max_daily_consecutive_losses is not None:
+            self.config["max_daily_consecutive_losses"] = max(1, min(5, int(max_daily_consecutive_losses)))
         if max_open_capital_allocation is not None:
             self.config["max_open_capital_allocation"] = max(0.01, min(0.50, float(max_open_capital_allocation)))
         if drawdown_throttling_enabled is not None:
@@ -217,6 +231,9 @@ class PortfolioRiskManager:
                 cfg = {}
         cfg["default_risk_pct"] = self.config["normal_risk_pct"]
         cfg["throttled_risk_pct"] = self.config["throttled_risk_pct"]
+        cfg["max_daily_loss_pct"] = self.config["max_daily_loss_pct"]
+        cfg["max_daily_consecutive_losses"] = self.config["max_daily_consecutive_losses"]
+        cfg["max_allowed_leverage"] = self.config.get("max_allowed_leverage", 25)
         cfg["max_open_allocation_pct"] = self.config["max_open_capital_allocation"]
         cfg["max_open_positions"] = self.config["max_open_positions"]
         cfg["max_trades_per_symbol"] = self.config["max_trades_per_symbol"]
@@ -1047,8 +1064,8 @@ class PortfolioRiskManager:
 
         # Check Daily Circuit Breaker Condition (Hard Daily Equity Loss Kill Switch)
         daily_loss_pct = (self.daily_realized_pnl / self.daily_start_balance) if self.daily_start_balance > 0 else 0.0
-        consec_limit = self.config.get("max_daily_consecutive_losses", 999)
-        trip_consec = (0 < consec_limit < 999 and self.daily_consecutive_losses >= consec_limit)
+        consec_limit = self.config.get("max_daily_consecutive_losses", 3)
+        trip_consec = (self.daily_consecutive_losses >= consec_limit)
         if daily_loss_pct <= -self.config["max_daily_loss_pct"] or trip_consec:
             if not self.circuit_breaker_active:
                 self.circuit_breaker_active = True
