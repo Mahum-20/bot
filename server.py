@@ -130,7 +130,7 @@ def save_zone_registry(registry: Dict[str, Dict]):
 
 
 
-ZONE_SINGLE_TRADE_REGISTRY: Dict[str, Dict] = load_zone_registry()
+ZONE_SINGLE_TRADE_REGISTRY: Dict[str, Dict] = zone_trade_registry._registry
 ZONE_CYCLE_REGISTRY: Dict[str, Dict] = {}  # reg_key -> {"symbol": str, "htf_tf": str, "initial_tap_time": int, "box": Dict}
 
 
@@ -1140,7 +1140,7 @@ async def live_portfolio_monitor_task():
 
                             reg_key = f"{symbol}_{htf_tf}_{b_id}"
 
-                            if reg_key not in ZONE_SINGLE_TRADE_REGISTRY:
+                            if not zone_trade_registry.is_zone_locked(reg_key):
 
                                 available_htf_boxes.append(b)
 
@@ -1332,102 +1332,68 @@ async def live_portfolio_monitor_task():
                             )
     
                             if eval_r.get("allowed"):
+                                # Check if zone is already locked before attempting execution
+                                if zone_trade_registry.is_zone_locked(reg_key):
+                                    monitor_logger.debug(f"Zone {reg_key} already locked in registry. Skipping.")
+                                    continue
+
+                                # Atomically register pending trade lock before order dispatch
+                                trade_meta = {
+                                    "id": t_id,
+                                    "symbol": symbol,
+                                    "htf": htf_tf,
+                                    "ltf": ltf_tf,
+                                    "action": t_type,
+                                    "entry_price": entry_p,
+                                    "sl_price": sl_p,
+                                    "tp_price": tp_p,
+                                    "planned_rr": planned_rr,
+                                    "time": now_ts,
+                                    "level_name": matched_box_name,
+                                    "pattern_name": pat_name
+                                }
+                                if not zone_trade_registry.register_pending_trade(reg_key, trade_meta):
+                                    continue
     
-                                open_r = portfolio_risk_engine.open_position(
-    
-                                    trade_id=t_id,
-    
-                                    symbol=symbol,
-    
-                                    trade_type=t_type,
-    
-                                    entry_price=entry_p,
-    
-                                    sl_price=sl_p,
-    
-                                    tp_price=tp_p,
-    
-                                    planned_rr=planned_rr,
-    
-                                    timestamp=now_ts,
-    
-                                    timeframe=htf_tf,
-    
-                                    sl_buffer_override=False
-    
-                                )
-    
-                                if open_r.get("allowed"):
-    
-                                    processed_signals.add(sig_key)
-    
-                                    # Record into ZONE_SINGLE_TRADE_REGISTRY (Strict 1 trade per level)
-    
-                                    matched_box = None
-    
-                                    for b in available_htf_boxes:
-    
-                                        b_top = max(b.get("top", 0), b.get("bottom", 0))
-    
-                                        b_bot = min(b.get("top", 0), b.get("bottom", 0))
-    
-                                        if c_high >= b_bot and c_low <= b_top:
-    
-                                            matched_box = b
-    
-                                            break
-    
-                                    if matched_box:
-    
-                                        b_id = f"{matched_box.get('text')}_{matched_box.get('left')}_{round(float(matched_box.get('top', 0)), 2)}_{round(float(matched_box.get('bottom', 0)), 2)}"
-    
-                                        reg_key = f"{symbol}_{htf_tf}_{b_id}"
-    
+                                try:
+                                    open_r = portfolio_risk_engine.open_position(
+                                        trade_id=t_id,
+                                        symbol=symbol,
+                                        trade_type=t_type,
+                                        entry_price=entry_p,
+                                        sl_price=sl_p,
+                                        tp_price=tp_p,
+                                        planned_rr=planned_rr,
+                                        timestamp=now_ts,
+                                        timeframe=htf_tf,
+                                        sl_buffer_override=False
+                                    )
+        
+                                    if open_r.get("allowed"):
+                                        processed_signals.add(sig_key)
                                         if reg_key in ZONE_CYCLE_REGISTRY:
                                             del ZONE_CYCLE_REGISTRY[reg_key]
-                                        ZONE_SINGLE_TRADE_REGISTRY[reg_key] = {
-    
-                                            "symbol": symbol,
-    
-                                            "htf": htf_tf,
-    
-                                            "ltf": ltf_tf,
-    
-                                            "trade_id": t_id,
-    
-                                            "entry_price": entry_p,
-    
-                                            "sl_price": sl_p,
-    
-                                            "tp_price": tp_p,
-    
-                                            "rr": planned_rr,
-    
-                                            "time": now_ts,
-    
-                                            "level_name": matched_box_name,
-    
-                                            "pattern": pat_name
-    
-                                        }
-    
-                                        save_zone_registry(ZONE_SINGLE_TRADE_REGISTRY)
-    
-    
-    
-                                    monitor_logger.info(
-    
-                                        f"🚀 [AUTONOMOUS {htf_tf.upper()}->{ltf_tf.upper()} TopG Engine] LIVE Order Dispatched [{t_id}]: "
-    
-                                        f"{symbol} {t_type} ({pat_name} @ {matched_box_name}) @ {entry_p} (SL: {sl_p}, TP: {tp_p}, RR: {planned_rr}R)"
-    
-                                    )
-    
-                                    await broadcast_portfolio_update()
-    
-                                    trade_taken_for_symbol = True
-
-                                break
+                                        # Permanently mark the zone as EXECUTED in the authoritative registry
+                                        zone_trade_registry.mark_trade_executed(reg_key, order_id=t_id)
+        
+                                        monitor_logger.info(
+                                            f"🚀 [AUTONOMOUS {htf_tf.upper()}->{ltf_tf.upper()} TopG Engine] LIVE Order Dispatched [{t_id}]: "
+                                            f"{symbol} {t_type} ({pat_name} @ {matched_box_name}) @ {entry_p} (SL: {sl_p}, TP: {tp_p}, RR: {planned_rr}R)"
+                                        )
+        
+                                        await broadcast_portfolio_update()
+                                        trade_taken_for_symbol = True
+                                        break
+                                    else:
+                                        # Order rejected by risk manager / executor: release pending lock
+                                        zone_trade_registry.release_rejected_zone(
+                                            reg_key, reason=open_r.get("reason", "RISK_REJECTED")
+                                        )
+                                        continue
+                                except Exception as exec_err:
+                                    # On unexpected failure, release pending lock so zone is not stuck
+                                    zone_trade_registry.release_rejected_zone(reg_key, reason=str(exec_err))
+                                    raise exec_err
 
                 except Exception as sym_err:
 

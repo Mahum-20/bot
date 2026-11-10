@@ -19,6 +19,11 @@ BACKEND_FILES = [
     "binance_live_executor.py",
     "portfolio_risk_manager.py",
     "timeframe_allocation_manager.py",
+    "canonical_strategy_engine.py",
+    "zone_trade_registry.py",
+    "exchange_filter_manager.py",
+    "rule_traceability_logger.py",
+    "faithful_backtest_engine.py",
     "bot_config.json"
 ]
 
@@ -46,6 +51,13 @@ def deploy(host):
     print(f"\n=== Deploying backend updates to AWS: ubuntu@{host} ===")
     print("NOTE: Dashboard static files are strictly UNTOUCHED as requested.\n")
 
+    # 0. Local file integrity check
+    print("\n0. Verifying local files...")
+    for f in BACKEND_FILES:
+        if not os.path.exists(f):
+            raise FileNotFoundError(f"Missing required deployment file: {f}")
+    print("[SUCCESS] All backend deployment files verified locally.")
+
     # 1. Test connection
     if not test_connection(host):
         print(f"[ERROR] Could not connect to {host}. Please check if the AWS instance is running or if the IP changed.")
@@ -68,8 +80,17 @@ def deploy(host):
         scp_reg = f'scp -i "{KEY_PATH}" -o StrictHostKeyChecking=no data/zone_trades_registry.json ubuntu@{host}:/home/ubuntu/bot/data/'
         run_cmd(scp_reg, check=False)
 
-    # 5. Restart trading-bot service
-    print("\n4. Restarting trading-bot service on AWS...")
+    # 5. Pre-deployment remote import verification
+    print("\n4. Verifying Python module imports on AWS before restart...")
+    verify_cmd = f'ssh -i "{KEY_PATH}" -o StrictHostKeyChecking=no ubuntu@{host} "cd /home/ubuntu/bot && python3 -c \"import server; import zone_trade_registry; import canonical_strategy_engine; print(\'REMOTE_VERIFICATION_PASSED\')\""'
+    ver_res = subprocess.run(verify_cmd, shell=True, text=True, capture_output=True)
+    if "REMOTE_VERIFICATION_PASSED" not in ver_res.stdout:
+        print(f"[CRITICAL ERROR] Remote import verification failed!\nSTDOUT: {ver_res.stdout}\nSTDERR: {ver_res.stderr}")
+        raise RuntimeError("Aborting restart: remote imports or configuration failed verification.")
+    print("[SUCCESS] Remote Python modules verified cleanly.")
+
+    # 6. Restart trading-bot service
+    print("\n5. Restarting trading-bot service on AWS...")
     restart_cmd = f'ssh -i "{KEY_PATH}" -o StrictHostKeyChecking=no ubuntu@{host} "sudo systemctl restart trading-bot && sleep 2 && systemctl is-active trading-bot"'
     res = run_cmd(restart_cmd)
 

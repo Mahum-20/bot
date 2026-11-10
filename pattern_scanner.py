@@ -60,35 +60,41 @@ def is_non_doji(c: Dict, min_body_ratio: float = 0.25) -> bool:
 
 def is_valid_morning_star(c1: Dict, c2: Dict, c3: Dict) -> bool:
     """
-    Morning Star:
-    - 1st Candle: Red (bearish) with a big body (must not be a Doji).
-    - 2nd Candle: Body strictly smaller than both 1st and 3rd candles, and lower wick dips below lows of 1st and 3rd candles.
-    - 3rd Candle: Green (bullish) with a mid-sized or large body (must not be a Doji).
+    Morning Star (Canonical 3-Candle Definition - Aligned 1:1 with Pine & Strategy Spec):
+    - 1st Candle: Red (bearish, close < open) with substantial body (non-doji >= 0.25 body ratio).
+    - 2nd Candle: Small body star (body <= 0.55 * c1_body and body < c3_body), lower wick dips below lows of 1st and 3rd candles.
+    - 3rd Candle: Green (bullish, close > open) with substantial body (non-doji >= 0.25 body ratio),
+                  closing at or above the midpoint of 1st candle's body (close >= c1_close + 0.5 * c1_body).
     """
     is_red_1 = (c1["close"] < c1["open"]) and is_non_doji(c1, 0.25)
     c1_body = abs(c1["close"] - c1["open"])
     c2_body = abs(c2["close"] - c2["open"])
     c3_body = abs(c3["close"] - c3["open"])
-    smaller_body_2 = (c2_body < c1_body) and (c2_body < c3_body)
+    smaller_body_2 = (c2_body <= (0.55 * c1_body)) and (c2_body < c3_body)
     wick_dip_2 = (c2["low"] < c1["low"]) and (c2["low"] < c3["low"])
     is_green_3 = (c3["close"] > c3["open"]) and is_non_doji(c3, 0.25)
-    return is_red_1 and smaller_body_2 and wick_dip_2 and is_green_3
+    c1_midpoint = c1["close"] + (0.5 * c1_body)
+    midpoint_cond = c3["close"] >= c1_midpoint
+    return is_red_1 and smaller_body_2 and wick_dip_2 and is_green_3 and midpoint_cond
 
 def is_valid_evening_star(c1: Dict, c2: Dict, c3: Dict) -> bool:
     """
-    Evening Star:
-    - 1st Candle: Green (bullish) with a big body (must not be a Doji).
-    - 2nd Candle: Body strictly smaller than both 1st and 3rd candles, and upper wick extends higher than highs of 1st and 3rd candles.
-    - 3rd Candle: Red (bearish) with a mid-sized or large body (must not be a Doji).
+    Evening Star (Canonical 3-Candle Definition - Aligned 1:1 with Pine & Strategy Spec):
+    - 1st Candle: Green (bullish, close > open) with substantial body (non-doji >= 0.25 body ratio).
+    - 2nd Candle: Small body star (body <= 0.55 * c1_body and body < c3_body), upper wick extends higher than highs of 1st and 3rd candles.
+    - 3rd Candle: Red (bearish, close < open) with substantial body (non-doji >= 0.25 body ratio),
+                  closing at or below the midpoint of 1st candle's body (close <= c1_open + 0.5 * c1_body).
     """
     is_green_1 = (c1["close"] > c1["open"]) and is_non_doji(c1, 0.25)
     c1_body = abs(c1["close"] - c1["open"])
     c2_body = abs(c2["close"] - c2["open"])
     c3_body = abs(c3["close"] - c3["open"])
-    smaller_body_2 = (c2_body < c1_body) and (c2_body < c3_body)
+    smaller_body_2 = (c2_body <= (0.55 * c1_body)) and (c2_body < c3_body)
     wick_peak_2 = (c2["high"] > c1["high"]) and (c2["high"] > c3["high"])
     is_red_3 = (c3["close"] < c3["open"]) and is_non_doji(c3, 0.25)
-    return is_green_1 and smaller_body_2 and wick_peak_2 and is_red_3
+    c1_midpoint = c1["open"] + (0.5 * c1_body)
+    midpoint_cond = c3["close"] <= c1_midpoint
+    return is_green_1 and smaller_body_2 and wick_peak_2 and is_red_3 and midpoint_cond
 
 # In-memory cache for historical closed tap-to-exit windows
 # Key: (symbol, ltf_interval, tap_time, exit_time, is_bullish, first_only, box_id, b_top, b_bot) -> List[label dicts]

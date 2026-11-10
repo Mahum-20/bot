@@ -58,7 +58,7 @@ class ZoneTradeRegistry:
         dir_name = os.path.dirname(os.path.abspath(self.storage_path))
         temp_fd, temp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
         try:
-            with open(temp_fd, "w", encoding="utf-8") as f:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
                 json.dump(self._registry, f, indent=2)
             os.replace(temp_path, self.storage_path)
         except Exception as e:

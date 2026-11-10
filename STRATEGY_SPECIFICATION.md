@@ -248,12 +248,17 @@ The strategy is a multi-timeframe system operating across three concurrent confi
 - **Mandatory / Optional:** Deactivated (Formerly Mandatory)
 - **Description:** Previous requirement for a counter-trend BOS/CHoCH in the 40 bars prior to zone tap has been removed. Price may enter the zone from any prior structural condition.
 
-#### Rule `MTF-003`: Valid Tap Entry Direction [DEACTIVATED / REMOVED]
-- **Status:** REMOVED per user instruction.
-- **Source File & Function:** [`ltf_approach_engine.py:is_valid_tap_approach()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py)
-- **Required Timeframe:** LTF
-- **Mandatory / Optional:** Deactivated (Formerly Mandatory)
-- **Description:** Previous directional constraint (Demand tapped only from above; Supply tapped only from below) has been removed. Any candle intersecting the zone boundary (`low <= box_top and high >= box_bottom`) qualifies as a valid tap.
+#### Rule `MTF-003`: Fresh Outside-to-Inside Zone Tap Entry
+- **Status:** Active & Mandatory
+- **Source File & Function:** [`ltf_approach_engine.py:is_valid_tap_approach()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py#L936-L958)
+- **Required Timeframe:** LTF (1m or 5m)
+- **Mandatory / Optional:** Mandatory
+- **Logical Condition:**
+  - **No Directional Bias:** The legacy requirement that Demand zones must only be approached from above, and Supply zones only from below, is permanently removed.
+  - **Mandatory Fresh Transition:** A genuine fresh transition from outside to inside the zone boundary is required:
+    1. Current candle touches or penetrates the qualifying zone (`c_curr['low'] <= box_top and c_curr['high'] >= box_bottom`).
+    2. Prior candle was completely outside the zone boundary (`not (c_prev['high'] >= box_bottom and c_prev['low'] <= box_top)`).
+  - **No Re-Trigger From Inside:** A candle already hovering inside the zone boundary cannot open a new reaction cycle.
 
 #### Rule `MTF-004`: 120-Candle Reaction Cycle State Machine (First Tap vs. Retest)
 - **Source File & Function:** [`ltf_approach_engine.py:compute_ltf_approach_structure()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py), [`server.py:ZONE_CYCLE_REGISTRY`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/server.py), [`faithful_backtest_engine.py:zone_cycles`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/faithful_backtest_engine.py)
@@ -327,54 +332,60 @@ The strategy is a multi-timeframe system operating across three concurrent confi
 - **Invalidation / Failure:** Patterns forming in mid-air away from the zone are ignored.
 
 #### Rule `CANDLE-002`: Bullish Engulfing Pattern
-- **Source File & Function:** [`pattern_scanner.py:is_valid_bullish_engulfing()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/pattern_scanner.py#L15-L35)
+- **Source File & Function:** [`pattern_scanner.py:is_valid_bullish_engulfing()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/pattern_scanner.py#L25-L38)
 - **Required Timeframe:** LTF
 - **Mandatory / Optional:** Option A for Bullish Trigger
-- **Logical Condition:**
+- **Logical Condition (Aligned 1:1 with TradingView Pine & Algorithmic Engine):**
   ```python
-  c_prev["close"] < c_prev["open"] and \
+  # Candle 1: Bearish or Doji
+  c_prev["close"] <= c_prev["open"] and \
+  # Candle 2: Bullish
   c_curr["close"] > c_curr["open"] and \
-  c_curr["close"] >= c_prev["open"] and \
-  c_curr["open"] <= c_prev["close"] and \
-  abs(c_curr["close"] - c_curr["open"]) > abs(c_prev["close"] - c_prev["open"])
+  # High Condition: Candle 2 wicks higher than Candle 1 high
+  c_curr["high"] > c_prev["high"] and \
+  # Close Condition: Candle 2 closes at or above Candle 1 open
+  c_curr["close"] >= c_prev["open"]
   ```
 - **Dependencies:** Candle must touch an active Level of 3, Level of 4, QML, RBS, or Double Bottom.
 - **Action on Pass:** Generates BUY entry signal on candle close.
 
 #### Rule `CANDLE-003`: Bearish Engulfing Pattern
-- **Source File & Function:** [`pattern_scanner.py:is_valid_bearish_engulfing()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/pattern_scanner.py#L38-L58)
+- **Source File & Function:** [`pattern_scanner.py:is_valid_bearish_engulfing()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/pattern_scanner.py#L39-L52)
 - **Required Timeframe:** LTF
 - **Mandatory / Optional:** Option A for Bearish Trigger
-- **Logical Condition:**
+- **Logical Condition (Aligned 1:1 with TradingView Pine & Algorithmic Engine):**
   ```python
-  c_prev["close"] > c_prev["open"] and \
+  # Candle 1: Bullish or Doji
+  c_prev["close"] >= c_prev["open"] and \
+  # Candle 2: Bearish
   c_curr["close"] < c_curr["open"] and \
-  c_curr["close"] <= c_prev["open"] and \
-  c_curr["open"] >= c_prev["close"] and \
-  abs(c_curr["close"] - c_curr["open"]) > abs(c_prev["close"] - c_prev["open"])
+  # Low Condition: Candle 2 wicks lower than Candle 1 low
+  c_curr["low"] < c_prev["low"] and \
+  # Close Condition: Candle 2 closes at or below Candle 1 open
+  c_curr["close"] <= c_prev["open"]
   ```
 - **Dependencies:** Candle must touch an active Level of 3, Level of 4, QML, SBR, or Double Top.
 - **Action on Pass:** Generates SELL entry signal on candle close.
 
 #### Rule `CANDLE-004`: Morning Star Pattern (3-Candle)
-- **Source File & Function:** [`ltf_approach_engine.py:scan_ltf_trade_entry()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py#L1636-L1662)
+- **Source File & Function:** [`pattern_scanner.py:is_valid_morning_star()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/pattern_scanner.py#L61-L81)
 - **Required Timeframe:** LTF
 - **Mandatory / Optional:** Option B for Bullish Trigger
-- **Logical Condition:**
-  - Candle 1: Strong red candle (`close < open`).
-  - Candle 2: Small body star (`body < c1_body and body < c3_body`).
-  - Candle 3: Strong green candle closing at or above midpoint of Candle 1 body (`close >= (open_1 + close_1)/2`).
+- **Logical Condition (Aligned 1:1 with TradingView Pine & Algorithmic Engine):**
+  - **Candle 1:** Bearish (`close < open`) with substantial body (`body / range >= 0.25`).
+  - **Candle 2:** Small star candle (`body <= 0.55 * c1_body` and `body < c3_body`), with lower wick dipping below lows of Candle 1 and Candle 3 (`low < c1_low and low < c3_low`).
+  - **Candle 3:** Bullish (`close > open`) with substantial body (`body / range >= 0.25`), closing at or above the midpoint of Candle 1 (`close >= c1_close + 0.5 * c1_body`).
 - **Dependencies:** Any 1 of the 3 candles touches the active level.
 - **Action on Pass:** Generates BUY entry signal on Candle 3 close.
 
 #### Rule `CANDLE-005`: Evening Star Pattern (3-Candle)
-- **Source File & Function:** [`ltf_approach_engine.py:scan_ltf_trade_entry()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/ltf_approach_engine.py#L1664-L1676)
+- **Source File & Function:** [`pattern_scanner.py:is_valid_evening_star()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/pattern_scanner.py#L83-L103)
 - **Required Timeframe:** LTF
 - **Mandatory / Optional:** Option B for Bearish Trigger
-- **Logical Condition:**
-  - Candle 1: Strong green candle (`close > open`).
-  - Candle 2: Small body star (`body < c1_body and body < c3_body`).
-  - Candle 3: Strong red candle closing at or below midpoint of Candle 1 body (`close <= (open_1 + close_1)/2`).
+- **Logical Condition (Aligned 1:1 with TradingView Pine & Algorithmic Engine):**
+  - **Candle 1:** Bullish (`close > open`) with substantial body (`body / range >= 0.25`).
+  - **Candle 2:** Small star candle (`body <= 0.55 * c1_body` and `body < c3_body`), with upper wick extending above highs of Candle 1 and Candle 3 (`high > c1_high and high > c3_high`).
+  - **Candle 3:** Bearish (`close < open`) with substantial body (`body / range >= 0.25`), closing at or below the midpoint of Candle 1 (`close <= c1_open + 0.5 * c1_body`).
 - **Dependencies:** Any 1 of the 3 candles touches the active level.
 - **Action on Pass:** Generates SELL entry signal on Candle 3 close.
 

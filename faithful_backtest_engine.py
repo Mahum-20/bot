@@ -58,6 +58,9 @@ class FaithfulBacktestEngine:
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
         self.slippage_pct = slippage_pct
+        self.throttled_risk_pct = 0.005
+        self.drawdown_throttling_enabled = True
+        self.drawdown_throttle_threshold = 0.08
         self.trace_logger = logger_instance if logger_instance else traceability_logger
 
         self.htf_sec = self._parse_tf_seconds(self.htf_tf)
@@ -427,19 +430,35 @@ class FaithfulBacktestEngine:
 
                 ctx.record_rule("RISK-002", RuleStatus.PASS, f"RR {planned_rr:.2f} >= {required_rr:.2f}")
 
-                # Position Sizing (Rule RISK-006)
-                risk_dollars = self.balance * self.risk_pct
+                # Drawdown-Based Risk Throttling (Parity with PortfolioRiskManager)
+                current_dd = 0.0
+                if self.peak_equity > 0:
+                    current_dd = (self.peak_equity - self.balance) / self.peak_equity
+                is_throttled = self.drawdown_throttling_enabled and (current_dd >= self.drawdown_throttle_threshold)
+                effective_risk_pct = self.throttled_risk_pct if is_throttled else self.risk_pct
+                risk_dollars = self.balance * effective_risk_pct
+
+                # Position Sizing & Exchange Filter Clamping (Rule RISK-006)
+                filt = exchange_filter_engine.get_filter(self.symbol)
+                min_qty = filt.get("min_qty", 0.001)
+                min_notional = filt.get("min_notional", 5.0)
+                step_size = filt.get("step_size", 0.001)
+                qty_prec = filt.get("qty_precision", 3)
+
+                clamped_entry = exchange_filter_engine.clamp_price(self.symbol, entry_p)
+                min_notional_qty = math.ceil(min_notional / clamped_entry / step_size) * step_size
+                min_viable_qty = round(max(min_qty, min_notional_qty), qty_prec)
+
                 ideal_pos_size = risk_dollars / risk_dist
-                min_step = 0.001 if 'BTC' in self.symbol.upper() else (0.01 if 'SOL' in self.symbol.upper() else 0.001)
-                pos_size = round(ideal_pos_size, 3)
-                if pos_size < min_step:
-                    pos_size = min_step
-                
-                # Rule RISK-006: Reject trade if minimum step size forces risk > 1.05x allowed risk budget
-                if (pos_size * risk_dist) > (risk_dollars * 1.05):
-                    ctx.record_rule("RISK-006", RuleStatus.FAIL, f"Minimum step {pos_size} risks ${(pos_size * risk_dist):.2f} > 1.05x budget ${risk_dollars:.2f}")
-                    self.trace_logger.log_context_completion(ctx)
-                    continue
+                if ideal_pos_size < min_viable_qty:
+                    effective_risk_dollars = min_viable_qty * risk_dist
+                    if effective_risk_dollars > (risk_dollars * 1.05):
+                        ctx.record_rule("RISK-006", RuleStatus.FAIL, f"Minimum step {min_viable_qty} risks ${effective_risk_dollars:.2f} > 1.05x budget ${risk_dollars:.2f}")
+                        self.trace_logger.log_context_completion(ctx)
+                        continue
+                    pos_size = min_viable_qty
+                else:
+                    pos_size = exchange_filter_engine.clamp_quantity(self.symbol, ideal_pos_size)
 
                 notional = pos_size * entry_p
                 if self.balance <= 0 or (notional / 25.0) > self.balance:
