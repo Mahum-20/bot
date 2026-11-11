@@ -201,6 +201,14 @@ class CanonicalStrategyEngine:
             tr["htf_tf"] = htf_tf
             tr["ltf_tf"] = ltf_tf
             tr["box_name"] = box_name
+            for ts_k in [
+                "h4_formation_time", "h4_tap_time", "historical_bos_time",
+                "structural_anchor_time", "reversal_confirmation_time",
+                "entry_levels_time", "retest_time", "entry_confirmation_time",
+                "winning_pathway"
+            ]:
+                if ts_k not in tr and ts_k in tap_info:
+                    tr[ts_k] = tap_info[ts_k]
 
             # Enforce target model parity verification
             req_rr = 3.0 if htf_sec >= 14400 else 2.5

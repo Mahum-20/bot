@@ -31,5 +31,14 @@
     "min_win_rate_pct": 30.0,
     "min_r_efficiency": 2.0,
     "prevent_cannibalization": true
+  },
+  "h4_m5_strategy": {
+    "entry_mode": "CONFIRMATION",
+    "adaptive_m5_lookback_min": 10,
+    "adaptive_m5_lookback_max": 50,
+    "single_choch_only": true,
+    "level_3_priority": true,
+    "level_4_activation_on_touch": true,
+    "allow_retest_outside_h4": true
   }
 }

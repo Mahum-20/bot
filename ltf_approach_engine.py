@@ -45,16 +45,142 @@ def clean_box_name(raw_text: str) -> str:
 
 
 
-def detect_internal_5_waves(
 
+def find_adaptive_preceding_bos(
     candles: List[Dict],
-
     tap_idx: int,
-
     is_bullish: bool,
+    min_lookback: int = 10,
+    max_lookback: int = 50
+) -> Optional[Dict[str, Any]]:
+    """
+    Adaptive M5 Market Structure Mapping:
+    Reconstructs preceding M5 market structure leading into an H4 zone tap.
+    
+    Dynamically scans candidate windows starting from min_lookback (10) up to max_lookback (50) M5 candles:
+    - H4 Supply (is_bullish=False -> SELL):
+      Price approached in an uptrend. Finds the preceding Bullish BOS sequence and the Higher Low (HL)
+      trough candle that initiated the impulse move causing that BOS.
+    - H4 Demand (is_bullish=True -> BUY):
+      Price approached in a downtrend. Finds the preceding Bearish BOS sequence and the Lower High (LH)
+      peak candle that initiated the impulse move causing that BOS.
+      
+    Returns a dictionary containing:
+      - historical_bos_time: timestamp of the candle that closed and broke structure
+      - structural_anchor_time: timestamp of the impulse start candle
+      - structural_anchor_price: price of the impulse start
+      - bos_price: price level of the broken structure
+      - bos_direction: direction of preceding BOS
+      - lookback_bars: lookback window size where structure was identified
+    """
+    if not candles or tap_idx < 0:
+        return None
 
-    htf_box: Optional[Dict] = None
+    tap_time = candles[min(tap_idx, len(candles) - 1)].get("time", 0)
+    pre_candles = [c for c in candles[:tap_idx + 1] if c.get("time", 0) <= tap_time]
+    if len(pre_candles) < 3:
+        return None
 
+    expected_bos_dir = "bearish" if is_bullish else "bullish"
+
+    candidate_windows = []
+    w = min_lookback
+    while w <= max_lookback:
+        candidate_windows.append(w)
+        w += 10
+    if max_lookback not in candidate_windows:
+        candidate_windows.append(max_lookback)
+
+    best_result = None
+
+    for win in candidate_windows:
+        slice_candles = pre_candles[max(0, len(pre_candles) - win):]
+        if len(slice_candles) < 4:
+            continue
+
+        eng = HTFEngine(
+            lookback_bars=len(slice_candles),
+            show_bos=True,
+            show_choch=True,
+            show_dual_choch=False,
+            show_triple_choch=False,
+            show_tjl_boxes=True,
+            tjl_extend=False
+        )
+        out = eng.run(slice_candles)
+        lines = out.get("lines", [])
+
+        qualifying_bos = []
+        for l in lines:
+            if l.get("type") == "BOS":
+                ldir = l.get("direction")
+                if not ldir:
+                    c = l.get("color", "")
+                    if c in ("#26a69a", "#10b981", "#00E676") or "bull" in l.get("id", ""):
+                        ldir = "bullish"
+                    else:
+                        ldir = "bearish"
+                if ldir == expected_bos_dir and l.get("x2", 0) <= tap_time:
+                    qualifying_bos.append(l)
+
+        if qualifying_bos:
+            last_bos = qualifying_bos[-1]
+            bos_time = last_bos.get("x2")
+            point_c_time = last_bos.get("x1")
+            bos_price = last_bos.get("y1")
+
+            sub_between = [c for c in slice_candles if point_c_time <= c.get("time", 0) <= bos_time]
+            if not sub_between:
+                sub_between = slice_candles
+
+            if expected_bos_dir == "bullish":
+                min_c = min(sub_between, key=lambda c: c["low"])
+                anchor_time = min_c["time"]
+                anchor_price = min_c["low"]
+            else:
+                max_c = max(sub_between, key=lambda c: c["high"])
+                anchor_time = max_c["time"]
+                anchor_price = max_c["high"]
+
+            best_result = {
+                "historical_bos_time": bos_time,
+                "structural_anchor_time": anchor_time,
+                "structural_anchor_price": anchor_price,
+                "bos_price": bos_price,
+                "bos_direction": expected_bos_dir,
+                "lookback_bars": win
+            }
+            break
+
+    if not best_result:
+        fallback_slice = pre_candles[max(0, len(pre_candles) - max_lookback):]
+        if fallback_slice:
+            if expected_bos_dir == "bullish":
+                min_c = min(fallback_slice, key=lambda c: c["low"])
+                anchor_time = min_c["time"]
+                anchor_price = min_c["low"]
+            else:
+                max_c = max(fallback_slice, key=lambda c: c["high"])
+                anchor_time = max_c["time"]
+                anchor_price = max_c["high"]
+            best_result = {
+                "historical_bos_time": fallback_slice[-1]["time"],
+                "structural_anchor_time": anchor_time,
+                "structural_anchor_price": anchor_price,
+                "bos_price": anchor_price,
+                "bos_direction": expected_bos_dir,
+                "lookback_bars": len(fallback_slice)
+            }
+
+    return best_result
+
+
+def detect_internal_5_waves(
+    candles: List[Dict],
+    tap_idx: int,
+    is_bullish: bool,
+    htf_box: Optional[Dict] = None,
+    structural_anchor: Optional[Dict] = None
 ) -> Dict[str, Any]:
 
     """
@@ -1354,23 +1480,18 @@ def compute_15m_atr(
 
 
 def scan_ltf_trade_entry(
-
     trade_candles: List[Dict],
-
     cutoff_time: Optional[int],
-
     is_bullish: bool,
-
     active_levels: List[Dict],
-
     htf_candles: Optional[List[Dict]] = None,
-
     htf_boxes: Optional[List[Dict]] = None,
-
     htf_box: Optional[Dict] = None,
-
-    htf_sec: int = 900
-
+    htf_sec: int = 900,
+    winning_pathway: str = 'NONE',
+    allow_retest_outside_htf: bool = True,
+    level_3_priority: bool = True,
+    structural_timestamps: Optional[Dict[str, Any]] = None
 ) -> Optional[Dict[str, Any]]:
 
     """
@@ -1443,7 +1564,7 @@ def scan_ltf_trade_entry(
 
         lvl_bot = min(lvl.get("top", 0), lvl.get("bottom", 0))
 
-        if htf_box:
+        if htf_box and not allow_retest_outside_htf:
 
             if is_bullish:
 
@@ -1542,9 +1663,9 @@ def scan_ltf_trade_entry(
 
 
 
-        # Check Candlestick Pattern Boundary: must touch within or at HTF zone boundary
+        # Check Candlestick Pattern Boundary: must touch within or at HTF zone boundary (unless allow_retest_outside_htf)
 
-        if htf_box:
+        if htf_box and not allow_retest_outside_htf:
 
             if is_bullish:
 
@@ -1564,26 +1685,40 @@ def scan_ltf_trade_entry(
 
 
 
-        # Check if ANY candle of the pattern touches ANY filtered active level
+        # Level 3 Priority & Level 4 Activation (Question 3: Option 2)
+        # In 5-Wave pathway, Level 3 is prioritized first; Level 4 activates if price enters Level 4
+        is_5_wave = ("5-Wave" in winning_pathway)
+        eligible_levels_for_candle = filtered_levels
+        if is_5_wave and level_3_priority:
+            l3_cand = next((lvl for lvl in filtered_levels if "LEVEL OF 3" in (lvl.get("text") or lvl.get("name") or "").upper()), None)
+            l4_cand = next((lvl for lvl in filtered_levels if "LEVEL OF 4" in (lvl.get("text") or lvl.get("name") or "").upper()), None)
+            if l3_cand and l4_cand:
+                l4_top = max(l4_cand["top"], l4_cand["bottom"])
+                l4_bot = min(l4_cand["top"], l4_cand["bottom"])
+                # Check if prior or current candle has touched / penetrated into Level 4
+                entered_l4 = False
+                for prev_i in range(start_idx, i + 1):
+                    c_chk = trade_candles[prev_i]
+                    if is_bullish and c_chk["low"] <= l4_top:
+                        entered_l4 = True
+                        break
+                    elif (not is_bullish) and c_chk["high"] >= l4_bot:
+                        entered_l4 = True
+                        break
+                if entered_l4:
+                    eligible_levels_for_candle = [l4_cand]
+                else:
+                    eligible_levels_for_candle = [l3_cand]
 
         matched_level = None
-
-        for lvl in filtered_levels:
-
+        for lvl in eligible_levels_for_candle:
             lvl_top = max(lvl["top"], lvl["bottom"])
-
             lvl_bot = min(lvl["top"], lvl["bottom"])
-
             if any(candle_touches_level(c, lvl_top, lvl_bot) for c in pattern_candles):
-
                 matched_level = lvl
-
                 break
 
-
-
         if not matched_level:
-
             continue
 
 
@@ -1680,6 +1815,7 @@ def scan_ltf_trade_entry(
 
         act = "BUY" if is_bullish else "SELL"
         lvl_n = clean_box_name(matched_level.get("text") or matched_level.get("name") or "Level")
+        st = structural_timestamps or {}
         return {
             "id": f"trade_{c_curr['time']}",
             "action": act,
@@ -1699,7 +1835,16 @@ def scan_ltf_trade_entry(
             "pattern_name": pattern_name,
             "pattern": pattern_name,
             "executed": is_executed,
-            "status": "EXECUTED" if is_executed else "SKIPPED_RR_BELOW_2_5"
+            "status": "EXECUTED" if is_executed else "SKIPPED_RR_BELOW_2_5",
+            "h4_formation_time": st.get("h4_formation_time"),
+            "h4_tap_time": st.get("h4_tap_time"),
+            "historical_bos_time": st.get("historical_bos_time"),
+            "structural_anchor_time": st.get("structural_anchor_time"),
+            "reversal_confirmation_time": st.get("reversal_confirmation_time"),
+            "entry_levels_time": st.get("entry_levels_time"),
+            "retest_time": pattern_candles[0]["time"],
+            "entry_confirmation_time": c_curr["time"],
+            "winning_pathway": winning_pathway
         }
 
 
@@ -1855,13 +2000,17 @@ def compute_ltf_approach_structure(
     # Pre-tap approach BOS/CHoCH requirement (MTF-002) removed per user instruction.
     has_approach_bos = True
 
+    # Adaptive M5 Market Structure Mapping: identify preceding BOS and structural starting point
+    adaptive_bos = find_adaptive_preceding_bos(
+        candles=trade_candles,
+        tap_idx=tap_in_slice,
+        is_bullish=is_bullish,
+        min_lookback=10,
+        max_lookback=50
+    )
+
     # 2. Check 5-Wave Internal Structure strictly adhering to the tapped zone direction:
-
-    # Demand tap -> Bullish internal 5-wave reaction
-
-    # Supply tap -> Bearish internal 5-wave reaction
-
-    res_5w = detect_internal_5_waves(trade_candles, tap_in_slice, is_bullish, htf_box=matched_box)
+    res_5w = detect_internal_5_waves(trade_candles, tap_in_slice, is_bullish, htf_box=matched_box, structural_anchor=adaptive_bos)
 
 
 
@@ -1886,13 +2035,11 @@ def compute_ltf_approach_structure(
 
 
     for l in raw_lines:
-
-        if "CHoCH" in l.get("type", ""):
-
+        l_type = l.get("type", "")
+        # PART 4: Single CHoCH only! Strictly exclude Dual CHoCH and Triple CHoCH for reversal entry
+        if "CHoCH" in l_type and "Dual" not in l_type and "Triple" not in l_type:
             # Strictly filter by zone polarity
-
             if _line_dir(l) != expected_direction:
-
                 continue
 
             l_x2 = l.get("x2", 0)
@@ -1957,7 +2104,7 @@ def compute_ltf_approach_structure(
 
         else:
 
-            winner_pathway = f"{earliest_choch_type} (External)"
+            winner_pathway = "Single CHoCH (External)"
 
             cutoff_time = earliest_choch_time
 
@@ -2243,24 +2390,31 @@ def compute_ltf_approach_structure(
 
     active_entry_levels = [b for b in selected_boxes if not str(b.get("text", "")).upper().startswith("HTF")]
 
+    # Assemble structural timestamps
+    h4_form_time = matched_box.get("confirmed_formation_time") or matched_box.get("left") or 0
+    st_timestamps = {
+        "h4_formation_time": h4_form_time,
+        "h4_tap_time": tap_actual_time,
+        "historical_bos_time": adaptive_bos.get("historical_bos_time") if adaptive_bos else None,
+        "structural_anchor_time": adaptive_bos.get("structural_anchor_time") if adaptive_bos else None,
+        "reversal_confirmation_time": cutoff_time,
+        "entry_levels_time": cutoff_time,
+        "winning_pathway": winner_pathway
+    }
+
     trade_result = scan_ltf_trade_entry(
-
         trade_candles=trade_candles,
-
         cutoff_time=cutoff_time,
-
         is_bullish=is_bullish,
-
         active_levels=active_entry_levels,
-
         htf_candles=htf_candles,
-
         htf_boxes=htf_boxes,
-
         htf_box=matched_box,
-
-        htf_sec=htf_sec
-
+        htf_sec=htf_sec,
+        winning_pathway=winner_pathway,
+        allow_retest_outside_htf=True,
+        level_3_priority=True,
+        structural_timestamps=st_timestamps
     )
 
 
@@ -2408,11 +2562,14 @@ def compute_ltf_approach_structure(
             "cutoff_time": cutoff_time,
 
             "w5_time": w5_time if w5_time < float('inf') else None,
-
             "choch_time": earliest_choch_time if earliest_choch_time < float('inf') else None,
-
             "waves_count": len(res_5w.get("waves", [])),
-
+            "h4_formation_time": h4_form_time,
+            "h4_tap_time": tap_actual_time,
+            "historical_bos_time": adaptive_bos.get("historical_bos_time") if adaptive_bos else None,
+            "structural_anchor_time": adaptive_bos.get("structural_anchor_time") if adaptive_bos else None,
+            "reversal_confirmation_time": cutoff_time,
+            "entry_levels_time": cutoff_time,
             "trade": trade_result
 
         }
