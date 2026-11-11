@@ -118,6 +118,22 @@ class TestH4M5Refinements(unittest.TestCase):
         filtered = [l for l in lines if "CHoCH" in l.get("type", "") and "Dual" not in l.get("type", "") and "Triple" not in l.get("type", "")]
         self.assertEqual(len(filtered), 0)
 
+        # Test compute_ltf_approach_structure chart lines: verify no Dual/Triple CHoCH line is ever emitted
+        candles = [
+            make_candle(1000 + i * 300, 80000 + (i % 5) * 50, 80000 + (i % 5) * 50 + 40, 80000 + (i % 5) * 50 - 40, 80000 + (i % 5) * 50 + 20)
+            for i in range(30)
+        ]
+        res = compute_ltf_approach_structure(
+            target_time=candles[15]["time"],
+            ltf_candles=candles,
+            htf_boxes=[{"text": "H4 Demand", "top": 80200, "bottom": 79900, "is_bullish": True, "confirmed_formation_time": 900}],
+            htf_sec=14400
+        )
+        for line in res.get("lines", []):
+            l_type = line.get("type", "")
+            self.assertNotIn("Dual", l_type)
+            self.assertNotIn("Triple", l_type)
+
     def test_06_valid_single_choch_after_h4_tap(self):
         """Test 6: Valid Single CHoCH after H4 tap qualifies as reversal confirmation."""
         line = {"type": "CHoCH", "direction": "bullish", "x1": 1000, "x2": 1600, "y1": 80000}

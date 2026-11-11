@@ -1952,22 +1952,15 @@ def compute_ltf_approach_structure(
 
     # 1. Run HTFEngine on the localized slice to find BOS, CHoCH, Dual CHoCH and their levels
 
+    # Run HTFEngine on localized LTF slice: strictly disable Dual & Triple CHoCH on LTF
     engine = HTFEngine(
-
         lookback_bars=len(trade_candles),
-
         show_bos=True,
-
         show_choch=True,
-
-        show_dual_choch=True,
-
-        show_triple_choch=True,
-
+        show_dual_choch=False,
+        show_triple_choch=False,
         show_tjl_boxes=True,
-
         tjl_extend=True
-
     )
 
     structure_out = engine.run(trade_candles)
@@ -2153,10 +2146,12 @@ def compute_ltf_approach_structure(
     for l in raw_lines:
 
         if cutoff_time is not None and l.get("x2", 0) > cutoff_time:
-
             continue
 
         line_type = l.get("type", "BOS")
+        # Ensure no Dual CHoCH or Triple CHoCH is ever drawn or marked on LTF
+        if "Dual" in line_type or "Triple" in line_type:
+            continue
 
         direction = l.get("direction", "bullish")
 
