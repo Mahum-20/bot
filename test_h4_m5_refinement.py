@@ -311,5 +311,55 @@ class TestH4M5Refinements(unittest.TestCase):
         self.assertEqual(canonical_engine.get_seconds("4h"), 14400)
         self.assertEqual(canonical_engine.get_seconds("5m"), 300)
 
+    def test_17_minimum_clean_window_scanner_selects_clean_m5_scenario(self):
+        """Test 17: When 30-candle window has Dual CHoCH but 11-candle window has only BOS and Single CHoCH, selects 11-candle window."""
+        from ltf_approach_engine import find_minimum_clean_m5_window
+        candles = []
+        t = 1000
+        # Bar 0-9: complex swings
+        candles.append(make_candle(t, 80500, 80550, 80200, 80250)); t += 300
+        candles.append(make_candle(t, 80250, 80300, 80000, 80050)); t += 300
+        candles.append(make_candle(t, 80050, 80100, 79800, 79850)); t += 300
+        candles.append(make_candle(t, 79850, 79900, 79700, 79720)); t += 300
+        candles.append(make_candle(t, 79720, 79740, 79600, 79620)); t += 300
+        candles.append(make_candle(t, 79620, 79800, 79600, 79780)); t += 300
+        candles.append(make_candle(t, 79780, 80000, 79750, 79980)); t += 300
+        candles.append(make_candle(t, 79980, 80600, 79950, 80580)); t += 300
+        candles.append(make_candle(t, 80580, 80600, 80100, 80150)); t += 300
+        candles.append(make_candle(t, 80150, 80200, 79500, 79550)); t += 300
+        # Clean 11-candle setup into tap
+        candles.append(make_candle(t, 79550, 79900, 79500, 79850)); t += 300
+        candles.append(make_candle(t, 79850, 80200, 79800, 80150)); t += 300
+        candles.append(make_candle(t, 80150, 80160, 80000, 80020)); t += 300
+        candles.append(make_candle(t, 80020, 80030, 79880, 79900)); t += 300
+        candles.append(make_candle(t, 79900, 80100, 79890, 80080)); t += 300
+        candles.append(make_candle(t, 80080, 80350, 80050, 80300)); t += 300
+        candles.append(make_candle(t, 80300, 80500, 80280, 80480)); t += 300
+        candles.append(make_candle(t, 80480, 80650, 80450, 80620)); t += 300 # Tap
+        tap_idx = len(candles) - 1
+        # Post-tap candles
+        candles.append(make_candle(t, 80620, 80630, 80400, 80420)); t += 300
+        candles.append(make_candle(t, 80420, 80430, 80250, 80280)); t += 300
+        candles.append(make_candle(t, 80280, 80520, 80250, 80500)); t += 300
+        candles.append(make_candle(t, 80500, 80510, 80350, 80380)); t += 300
+        candles.append(make_candle(t, 80380, 80400, 80100, 80150)); t += 300
+        end_idx = len(candles)
+
+        res = find_minimum_clean_m5_window(
+            ltf_candles=candles,
+            tap_idx=tap_idx,
+            end_idx=end_idx,
+            is_bullish=False,
+            box_top=80700,
+            box_bot=80550,
+            buffer=80550 * 0.0005,
+            min_bars=10,
+            max_bars=25
+        )
+        self.assertIsNotNone(res)
+        self.assertEqual(res["window_bars"], 10)
+        types = [l.get("type") for l in res.get("raw_lines", [])]
+        self.assertFalse(any("Dual" in str(x) or "Triple" in str(x) for x in types))
+
 if __name__ == "__main__":
     unittest.main()

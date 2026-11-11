@@ -175,6 +175,195 @@ def find_adaptive_preceding_bos(
     return best_result
 
 
+
+def find_minimum_clean_m5_window(
+    ltf_candles: List[Dict],
+    tap_idx: int,
+    end_idx: int,
+    is_bullish: bool,
+    box_top: float,
+    box_bot: float,
+    buffer: float,
+    min_bars: int = 10,
+    max_bars: int = 50
+) -> Dict[str, Any]:
+    """
+    Adaptive Minimum Clean Window Scanner:
+    Scans candidate pre-tap lookback windows from min_bars (10) up to max_bars (50).
+    Runs HTFEngine with full natural indicator settings (show_dual_choch=True, show_triple_choch=True).
+    
+    Identifies the MINIMUM candle scenario that contains:
+    - Pre-tap: only a set of approach BOS (bullish for supply / bearish for demand)
+    - Post-tap: single reversal CHoCH (bearish for supply / bullish for demand)
+    - Zero Dual CHoCH and Zero Triple CHoCH anywhere in the window.
+    
+    If no window has a post-tap CHoCH yet, finds the minimum window with clean approach BOS and zero Dual/Triple CHoCH.
+    """
+    tap_time = ltf_candles[tap_idx]["time"]
+    expected_approach_bos = "bearish" if is_bullish else "bullish"
+    expected_reversal_choch = "bullish" if is_bullish else "bearish"
+
+    clean_choch_candidate = None
+    clean_approach_candidate = None
+    fallback_candidate = None
+
+    for W in range(min_bars, max_bars + 1):
+        s_idx = max(0, tap_idx - W)
+        slice_candles = ltf_candles[s_idx:end_idx]
+        if len(slice_candles) < 5:
+            continue
+
+        # Run HTFEngine with full natural settings (no artificial suppression!)
+        eng = HTFEngine(
+            lookback_bars=len(slice_candles),
+            show_bos=True,
+            show_choch=True,
+            show_dual_choch=True,
+            show_triple_choch=True,
+            show_tjl_boxes=True,
+            tjl_extend=True
+        )
+        out = eng.run(slice_candles)
+        raw_lines = out.get("lines", [])
+        raw_boxes = out.get("boxes", [])
+
+        # Check for ANY Dual CHoCH or Triple CHoCH anywhere in this window
+        has_dual_or_triple = any(
+            ("Dual" in l.get("type", "") or "Triple" in l.get("type", ""))
+            for l in raw_lines
+        )
+        if has_dual_or_triple:
+            continue  # Disqualified: contains multi-CHoCH chop/noise!
+
+        # Check pre-tap approach lines
+        pre_tap_lines = [l for l in raw_lines if l.get("x2", 0) <= tap_time]
+        qualifying_approach_bos = [
+            l for l in pre_tap_lines
+            if l.get("type") == "BOS" and _line_dir_helper(l) == expected_approach_bos
+        ]
+
+        # Check post-tap reversal CHoCH lines
+        post_tap_chochs = []
+        for l in raw_lines:
+            l_type = l.get("type", "")
+            if "CHoCH" in l_type and "Dual" not in l_type and "Triple" not in l_type:
+                if l.get("x2", 0) >= tap_time and _line_dir_helper(l) == expected_reversal_choch:
+                    candles_between = [c for c in slice_candles if tap_time <= c.get("time", 0) <= l.get("x2", 0)]
+                    if candles_between:
+                        if is_bullish:
+                            trough_low = min(c["low"] for c in candles_between)
+                            if trough_low > box_top + buffer:
+                                continue
+                        else:
+                            peak_high = max(c["high"] for c in candles_between)
+                            if peak_high < box_bot - buffer:
+                                continue
+                    post_tap_chochs.append(l)
+
+        # Assemble adaptive BOS info
+        adaptive_bos = None
+        if qualifying_approach_bos:
+            last_bos = qualifying_approach_bos[-1]
+            bos_t = last_bos.get("x2")
+            pt_c_t = last_bos.get("x1")
+            sub_b = [c for c in slice_candles if pt_c_t <= c.get("time", 0) <= bos_t] or slice_candles
+            if expected_approach_bos == "bullish":
+                min_c = min(sub_b, key=lambda c: c["low"])
+                a_time, a_price = min_c["time"], min_c["low"]
+            else:
+                max_c = max(sub_b, key=lambda c: c["high"])
+                a_time, a_price = max_c["time"], max_c["high"]
+            adaptive_bos = {
+                "historical_bos_time": bos_t,
+                "structural_anchor_time": a_time,
+                "structural_anchor_price": a_price,
+                "bos_price": last_bos.get("y1"),
+                "bos_direction": expected_approach_bos,
+                "lookback_bars": W
+            }
+
+        # Scenario 1: Clean approach BOS + Single reversal CHoCH + ZERO Dual/Triple CHoCH!
+        if qualifying_approach_bos and len(post_tap_chochs) == 1:
+            clean_choch_candidate = {
+                "start_idx": s_idx,
+                "window_bars": W,
+                "trade_candles": slice_candles,
+                "raw_lines": raw_lines,
+                "raw_boxes": raw_boxes,
+                "single_choch": post_tap_chochs[0],
+                "approach_bos": qualifying_approach_bos[-1],
+                "adaptive_bos": adaptive_bos,
+                "has_clean_choch": True
+            }
+            # First match starting from min_bars is the MINIMUM candle scenario!
+            break
+
+        # Scenario 2: Clean approach BOS + ZERO Dual/Triple CHoCH (waiting for CHoCH or 5-wave)
+        if qualifying_approach_bos and not clean_approach_candidate:
+            clean_approach_candidate = {
+                "start_idx": s_idx,
+                "window_bars": W,
+                "trade_candles": slice_candles,
+                "raw_lines": raw_lines,
+                "raw_boxes": raw_boxes,
+                "single_choch": None,
+                "approach_bos": qualifying_approach_bos[-1],
+                "adaptive_bos": adaptive_bos,
+                "has_clean_choch": False
+            }
+
+        if not fallback_candidate:
+            fallback_candidate = {
+                "start_idx": s_idx,
+                "window_bars": W,
+                "trade_candles": slice_candles,
+                "raw_lines": raw_lines,
+                "raw_boxes": raw_boxes,
+                "single_choch": None,
+                "approach_bos": None,
+                "adaptive_bos": adaptive_bos,
+                "has_clean_choch": False
+            }
+
+    if clean_choch_candidate:
+        return clean_choch_candidate
+    if clean_approach_candidate:
+        return clean_approach_candidate
+    if fallback_candidate:
+        return fallback_candidate
+
+    default_s_idx = max(0, tap_idx - max_bars)
+    default_slice = ltf_candles[default_s_idx:end_idx]
+    eng = HTFEngine(lookback_bars=len(default_slice), show_bos=True, show_choch=True, show_dual_choch=True, show_triple_choch=True, show_tjl_boxes=True, tjl_extend=True)
+    out = eng.run(default_slice)
+    return {
+        "start_idx": default_s_idx,
+        "window_bars": max_bars,
+        "trade_candles": default_slice,
+        "raw_lines": out.get("lines", []),
+        "raw_boxes": out.get("boxes", []),
+        "single_choch": None,
+        "approach_bos": None,
+        "adaptive_bos": None,
+        "has_clean_choch": False
+    }
+
+
+def _line_dir_helper(line: Dict) -> str:
+    if line.get("direction"):
+        return line["direction"]
+    c = line.get("color", "")
+    if c in ("#26a69a", "#10b981", "#00E676"):
+        return "bullish"
+    if c in ("#ef5350", "#ef4444", "#FF5252"):
+        return "bearish"
+    lid = line.get("id", "")
+    if "bull" in lid:
+        return "bullish"
+    if "bear" in lid:
+        return "bearish"
+    return "bullish"
+
 def detect_internal_5_waves(
     candles: List[Dict],
     tap_idx: int,
@@ -1913,61 +2102,38 @@ def compute_ltf_approach_structure(
 
 
 
-    # Lookback window before tapping candle (40 bars captures preceding approach structure cleanly)
-
-    lookback_pre = 120 if htf_sec >= 14400 else 80
-    start_idx = max(0, tap_idx - lookback_pre)
-
-    
-
-    # Trade reaction window: extended up to 240 bars after tap (or end of ltf_candles)
-
-    # allowing sufficient room for 5-wave internal structures and CHoCH reactions to complete
-
     end_idx = min(len(ltf_candles), tap_idx + 120)
-
-    trade_candles = ltf_candles[start_idx:end_idx]
-
-
-
-    if len(trade_candles) < 10:
-
-        return {"lines": [], "boxes": [], "labels": [], "tap_info": None}
-
-
-
-    tap_in_slice = tap_idx - start_idx
-
     tap_actual_time = ltf_candles[tap_idx]["time"]
-
     is_bullish = matched_box.get("is_bullish", True)
-
     box_top = max(matched_box.get("top", 0), matched_box.get("bottom", 0))
-
     box_bot = min(matched_box.get("top", 0), matched_box.get("bottom", 0))
-
     buffer = box_top * 0.0005
 
-
-
-    # 1. Run HTFEngine on the localized slice to find BOS, CHoCH, Dual CHoCH and their levels
-
-    # Run HTFEngine on localized LTF slice: strictly disable Dual & Triple CHoCH on LTF
-    engine = HTFEngine(
-        lookback_bars=len(trade_candles),
-        show_bos=True,
-        show_choch=True,
-        show_dual_choch=False,
-        show_triple_choch=False,
-        show_tjl_boxes=True,
-        tjl_extend=True
+    # Adaptive Minimum Clean Window Scanner (10 to 50 candles before tap):
+    # Evaluates candidate lookback windows to find the MINIMUM window with clean approach BOS,
+    # single reversal CHoCH, and ZERO Dual/Triple CHoCH (natural HTFEngine, no artificial suppression!)
+    clean_win = find_minimum_clean_m5_window(
+        ltf_candles=ltf_candles,
+        tap_idx=tap_idx,
+        end_idx=end_idx,
+        is_bullish=is_bullish,
+        box_top=box_top,
+        box_bot=box_bot,
+        buffer=buffer,
+        min_bars=10,
+        max_bars=50
     )
 
-    structure_out = engine.run(trade_candles)
+    start_idx = clean_win["start_idx"]
+    trade_candles = clean_win["trade_candles"]
+    tap_in_slice = tap_idx - start_idx
+    raw_lines = clean_win["raw_lines"]
+    raw_boxes = clean_win["raw_boxes"]
+    clean_single_choch = clean_win["single_choch"]
+    adaptive_bos = clean_win["adaptive_bos"]
 
-    raw_lines = structure_out.get("lines", [])
-
-    raw_boxes = structure_out.get("boxes", [])
+    if len(trade_candles) < 10:
+        return {"lines": [], "boxes": [], "labels": [], "tap_info": None}
 
 
 
@@ -2011,73 +2177,17 @@ def compute_ltf_approach_structure(
 
 
 
-    # 3. Check earliest post-tap CHoCH / Dual CHoCH adhering strictly to zone direction:
-
-    # Demand tap -> Bullish CHoCH only (ignore bearish CHoCH)
-
-    # Supply tap -> Bearish CHoCH only (ignore bullish CHoCH)
-
+    # 3. Check reversal Single CHoCH from chosen minimum clean window:
     earliest_choch_time = float('inf')
-
-    earliest_choch_type = "CHoCH"
-
+    earliest_choch_type = 'Single CHoCH'
     earliest_choch_bar = None
 
-    expected_direction = "bullish" if is_bullish else "bearish"
-
-
-
-    for l in raw_lines:
-        l_type = l.get("type", "")
-        # PART 4: Single CHoCH only! Strictly exclude Dual CHoCH and Triple CHoCH for reversal entry
-        if "CHoCH" in l_type and "Dual" not in l_type and "Triple" not in l_type:
-            # Strictly filter by zone polarity
-            if _line_dir(l) != expected_direction:
-                continue
-
-            l_x2 = l.get("x2", 0)
-
-            if l_x2 >= tap_actual_time:
-
-                # Strict Zone Entry Check for CHoCH:
-
-                # The reversal structure must form directly from the zone tap extreme
-
-                candles_between = [c for c in trade_candles if tap_actual_time <= c["time"] <= l_x2]
-
-                if candles_between:
-
-                    if is_bullish:
-
-                        trough_low = min(c["low"] for c in candles_between)
-
-                        if trough_low > box_top + buffer:
-
-                            continue  # Formed far away from zone extreme
-
-                    else:
-
-                        peak_high = max(c["high"] for c in candles_between)
-
-                        if peak_high < box_bot - buffer:
-
-                            continue  # Formed far away from zone extreme
-
-
-
-                if l_x2 < earliest_choch_time:
-
-                    earliest_choch_time = l_x2
-
-                    earliest_choch_type = l.get("type", "CHoCH")
-
-                    for b_i, c in enumerate(trade_candles):
-
-                        if c["time"] == l_x2:
-
-                            earliest_choch_bar = b_i
-
-                            break
+    if clean_single_choch:
+        earliest_choch_time = clean_single_choch.get('x2', float('inf'))
+        for b_i, c in enumerate(trade_candles):
+            if c['time'] == earliest_choch_time:
+                earliest_choch_bar = b_i
+                break
 
 
 
@@ -2149,9 +2259,7 @@ def compute_ltf_approach_structure(
             continue
 
         line_type = l.get("type", "BOS")
-        # Ensure no Dual CHoCH or Triple CHoCH is ever drawn or marked on LTF
-        if "Dual" in line_type or "Triple" in line_type:
-            continue
+
 
         direction = l.get("direction", "bullish")
 
