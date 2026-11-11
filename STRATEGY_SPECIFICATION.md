@@ -204,21 +204,35 @@ The strategy is a multi-timeframe system operating across three concurrent confi
 - **Action on Pass:** Zone exists at decision time.
 - **Invalidation / Failure:** Zone cannot be referenced before its confirmed formation bar close.
 
-#### Rule `ZONE-003`: Institutional 2-Candle Mitigation Invalidation
-- **Source File & Function:** [`htf_engine.py:is_htf_box_active()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/htf_engine.py#L42-L46)
-- **Required Timeframe:** HTF
+#### Rule `ZONE-003`: Institutional 2-Candle Invalidation (Source Timeframe Only)
+- **Source File & Function:** [`htf_level_lifecycle_manager.py:HTFLevelLifecycleManager.process_closed_htf_candle()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/htf_level_lifecycle_manager.py)
+- **Required Timeframe:** HTF source timeframe (H4, H1, or M15)
 - **Mandatory / Optional:** Mandatory
 - **Logical Condition:**
-  ```python
-  if box.get("is_mitigated") or box.get("is_broken"):
-      mit_time = box.get("mitigated_time") or box.get("right")
-      if mit_time and current_decision_time >= mit_time:
-          return False
-  ```
-  A Demand zone is mitigated when two consecutive HTF candles close below the zone bottom (`close < box_bottom`). A Supply zone is mitigated when two consecutive HTF candles close above the zone top (`close > box_top`).
-- **Dependencies:** HTF candle close evaluation.
-- **Action on Pass:** Zone remains active.
-- **Invalidation / Failure:** Zone is marked DEAD/MITIGATED; permanently excluded from subsequent trade generation.
+  - **Source Timeframe Isolation:** An H1 level must be evaluated strictly using completed H1 candle closes; an H4 level using completed H4 closes; an M15 level using completed M15 closes. Lower-timeframe closes cannot invalidate higher-timeframe levels.
+  - **Consecutive Requirement:**
+    - Demand Zone: Two consecutive completed candles close below the lower boundary (`close < box_bottom`).
+    - Supply Zone: Two consecutive completed candles close above the upper boundary (`close > box_top`).
+  - **Counter Reset:** If a candle closes beyond, but the subsequent candle closes back inside or on the non-beyond side, the consecutive counter resets immediately to zero.
+  - **Exclusion of Incomplete Bars:** Never evaluates forming/incomplete candles.
+- **Dependencies:** Confirmed HTF candle closures.
+- **Action on Pass:** Level remains `ACTIVE`.
+- **Invalidation / Failure:** Level status set to `INVALIDATED`; permanently disqualified from trade generation.
+
+#### Rule `ZONE-004`: Overlapping HTF Levels Collective Grouping & Consumed State Inheritance
+- **Source File & Function:** [`htf_level_lifecycle_manager.py:HTFLevelLifecycleManager.register_or_update_box()`](file:///c:/Users/PMLS/Downloads/Python%20Indicator/htf_level_lifecycle_manager.py)
+- **Required Timeframe:** Cross-Timeframe (H4, H1, M15)
+- **Mandatory / Optional:** Mandatory
+- **Logical Condition:**
+  - **Overlap Detection:** Two levels of the same symbol and type (Demand with Demand, Supply with Supply) overlap if their price intervals intersect:
+    $$\max(b_{1,\text{bot}}, b_{2,\text{bot}}) \le \min(b_{1,\text{top}}, b_{2,\text{top}})$$
+  - **One Collective Opportunity:** Overlapping levels form a connected component (Collective Level Group). Exactly ONE trade is permitted from the entire collective group regardless of timeframe.
+  - **Critical Consumed-State Inheritance:**
+    - If a collective group is `CONSUMED`, any newly generated level overlapping that price zone inherits `CONSUMED` status immediately.
+    - If two groups merge because a new level spans both, and either group was consumed, the entire merged group is permanently `CONSUMED`.
+- **Dependencies:** Level registration across timeframes.
+- **Action on Pass:** Group is `ACTIVE` (or `PARTIALLY_INVALIDATED` if some constituents remain active).
+- **Invalidation / Failure:** If all constituents are invalidated, group is `INVALIDATED`. If consumed, group is permanently locked against further trades.
 
 ---
 

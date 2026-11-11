@@ -26,6 +26,8 @@ from ltf_approach_engine import (
     compute_15m_atr,
     is_valid_tap_approach
 )
+from exchange_filter_manager import exchange_filter_engine
+from htf_level_lifecycle_manager import HTFLevelLifecycleManager
 from rule_traceability_logger import (
     traceability_logger,
     RuleStatus,
@@ -88,6 +90,10 @@ class FaithfulBacktestEngine:
         self.daily_realized_pnl = 0.0
         self.daily_consecutive_losses = 0
         self.circuit_breaker_active = False
+        self.lifecycle_manager = HTFLevelLifecycleManager(
+            storage_path=os.path.join(DATA_DIR, f"htf_lifecycle_bt_{self.symbol}_{self.htf_tf}.json")
+        )
+        self.lifecycle_manager.clear_for_test()
 
     def _parse_tf_seconds(self, tf: str) -> int:
         mapping = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
@@ -288,6 +294,13 @@ class FaithfulBacktestEngine:
             # Update HTF structure when a new HTF candle closes (Rolling 500-Candle Window - TradingView Model)
             if last_computed_htf_time != htf_close_time:
                 last_computed_htf_time = htf_close_time
+                self.lifecycle_manager.process_closed_htf_candle(
+                    symbol=self.symbol,
+                    timeframe=self.htf_tf,
+                    candle=latest_closed_htf,
+                    htf_sec=self.htf_sec,
+                    is_completed=True
+                )
                 htf_start_idx = max(0, h_idx - 500)
                 htf_subset = self.c_htf[htf_start_idx:h_idx]
                 htf_engine = HTFEngine(lookback_bars=min(500, len(htf_subset)), show_tjl_boxes=True, tjl_extend=True)
@@ -299,6 +312,7 @@ class FaithfulBacktestEngine:
                     b["confirmed_formation_time"] = b_left
                     if "mitigated_time" not in b:
                         b["mitigated_time"] = b.get("right")
+                    self.lifecycle_manager.register_or_update_box(self.symbol, self.htf_tf, b)
 
             # Filter active unmitigated HTF boxes at current time (Rules ZONE-001, ZONE-002, ZONE-003)
             active_htf_boxes = [
@@ -308,13 +322,15 @@ class FaithfulBacktestEngine:
             if not active_htf_boxes:
                 continue
 
-            # Filter out boxes that already produced a trade (Rule RISK-003)
+            # Filter out boxes that already produced a trade or are invalidated (Rules RISK-003, ZONE-003)
             available_boxes = []
             for b in active_htf_boxes:
                 b_id = f"{b.get('text')}_{b.get('left')}_{round(float(b.get('top', 0)), 2)}_{round(float(b.get('bottom', 0)), 2)}"
                 reg_key = f"{self.symbol}_{self.htf_tf}_{b_id}"
                 if reg_key not in self.zone_single_trade_registry:
-                    available_boxes.append(b)
+                    can_trade, _ = self.lifecycle_manager.is_box_tradable(self.symbol, self.htf_tf, b)
+                    if can_trade:
+                        available_boxes.append(b)
 
             if not available_boxes:
                 continue
@@ -480,11 +496,12 @@ class FaithfulBacktestEngine:
                     self.trace_logger.log_context_completion(ctx)
                     continue
 
-                # Lock zone in registry and close cycle (Rule RISK-003)
+                # Lock zone in registry and mark collective group CONSUMED (Rules RISK-003, ZONE-003)
                 b_id = f"{target_b.get('text')}_{target_b.get('left')}_{round(float(target_b.get('top', 0)), 2)}_{round(float(target_b.get('bottom', 0)), 2)}"
                 zone_lock_key = f"{self.symbol}_{self.htf_tf}_{b_id}"
                 self.zone_single_trade_registry.add(zone_lock_key)
                 self.zone_single_trade_registry.add(reg_key)
+                self.lifecycle_manager.mark_trade_executed(self.symbol, self.htf_tf, target_b, trade_id=f"BT_{len(trades)}")
                 if reg_key in self.zone_cycles:
                     del self.zone_cycles[reg_key]
                 cycle_handled = True

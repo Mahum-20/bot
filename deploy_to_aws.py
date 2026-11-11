@@ -21,6 +21,7 @@ BACKEND_FILES = [
     "timeframe_allocation_manager.py",
     "canonical_strategy_engine.py",
     "zone_trade_registry.py",
+    "htf_level_lifecycle_manager.py",
     "exchange_filter_manager.py",
     "rule_traceability_logger.py",
     "faithful_backtest_engine.py",

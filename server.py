@@ -39,6 +39,7 @@ from timeframe_allocation_manager import timeframe_allocation_engine
 
 from ltf_approach_engine import compute_ltf_approach_structure, is_valid_tap_approach
 from zone_trade_registry import zone_trade_registry
+from htf_level_lifecycle_manager import htf_level_lifecycle_manager
 
 
 
@@ -1112,11 +1113,23 @@ async def live_portfolio_monitor_task():
                         htf_res = htf_engine_inst.run(recent_htf)
                         raw_htf_boxes = [b for b in htf_res.get("boxes", []) if is_qualifying_htf_zone(b)]
 
+                        # Update HTF level invalidation and overlap management lifecycle
+                        if recent_htf:
+                            htf_level_lifecycle_manager.process_closed_htf_candle(
+                                symbol=symbol,
+                                timeframe=htf_tf,
+                                candle=recent_htf[-1],
+                                htf_sec=htf_sec_val,
+                                is_completed=True
+                            )
+
                         for b in raw_htf_boxes:
                             b_left = b.get("confirmed_formation_time") or b.get("left") or b.get("start_time") or b.get("time") or 0
                             b["confirmed_formation_time"] = b_left
                             if "mitigated_time" not in b:
                                 b["mitigated_time"] = b.get("right")
+                            # Register with lifecycle manager for cross-timeframe overlap grouping & invalidation tracking
+                            htf_level_lifecycle_manager.register_or_update_box(symbol, htf_tf, b)
 
                         # Filter active HTF boxes
                         active_htf_boxes = [
@@ -1130,7 +1143,7 @@ async def live_portfolio_monitor_task():
 
 
 
-                        # Filter out boxes that have already taken a trade (Strict 1 trade per level rule)
+                        # Filter out boxes that have already taken a trade (Strict 1 trade per level/group rule)
 
                         available_htf_boxes = []
 
@@ -1141,8 +1154,9 @@ async def live_portfolio_monitor_task():
                             reg_key = f"{symbol}_{htf_tf}_{b_id}"
 
                             if not zone_trade_registry.is_zone_locked(reg_key):
-
-                                available_htf_boxes.append(b)
+                                can_trade, reason = htf_level_lifecycle_manager.is_box_tradable(symbol, htf_tf, b)
+                                if can_trade:
+                                    available_htf_boxes.append(b)
 
 
 
@@ -1373,8 +1387,9 @@ async def live_portfolio_monitor_task():
                                         processed_signals.add(sig_key)
                                         if reg_key in ZONE_CYCLE_REGISTRY:
                                             del ZONE_CYCLE_REGISTRY[reg_key]
-                                        # Permanently mark the zone as EXECUTED in the authoritative registry
+                                        # Permanently mark the zone and its collective group as EXECUTED/CONSUMED
                                         zone_trade_registry.mark_trade_executed(reg_key, order_id=t_id)
+                                        htf_level_lifecycle_manager.mark_trade_executed(symbol, htf_tf, target_box, trade_id=t_id)
         
                                         monitor_logger.info(
                                             f"🚀 [AUTONOMOUS {htf_tf.upper()}->{ltf_tf.upper()} TopG Engine] LIVE Order Dispatched [{t_id}]: "

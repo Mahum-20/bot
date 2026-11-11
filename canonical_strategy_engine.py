@@ -23,6 +23,7 @@ from typing import List, Dict, Optional, Tuple, Any, Set
 from htf_engine import HTFEngine, is_htf_box_active
 from ltf_approach_engine import compute_ltf_approach_structure, is_valid_tap_approach
 from zone_trade_registry import zone_trade_registry, ZoneTradeRegistry
+from htf_level_lifecycle_manager import htf_level_lifecycle_manager
 
 logger = logging.getLogger("CanonicalStrategyEngine")
 
@@ -124,8 +125,11 @@ class CanonicalStrategyEngine:
             b_id = f"{b_name}_{b_left}_{b_top:.2f}_{b_bot:.2f}"
             reg_key = self.registry.get_zone_key(symbol, htf_tf, b_id)
 
-            # Skip if zone has already been locked/traded (Rule RISK-003)
+            # Skip if zone has already been locked/traded or invalidated (Rules RISK-003, ZONE-003)
             if self.registry.is_zone_locked(reg_key):
+                continue
+            can_trade, _ = htf_level_lifecycle_manager.is_box_tradable(symbol, htf_tf, b)
+            if not can_trade:
                 continue
 
             if reg_key not in zone_cycles:
