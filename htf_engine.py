@@ -10,15 +10,16 @@ def is_qualifying_htf_zone(box: Dict) -> bool:
       3. A+ from Dual CHoCH (ELIMINATED per forensic optimization)
       4. SBR / RBS from Dual CHoCH only (in_dual_choch == True)
     """
+    box_id = str(box.get("id") or "").lower()
     txt = (box.get("text") or box.get("name") or "").upper()
-    if "TJL1" in txt or "TJL2" in txt:
+    if box_id.startswith("tjl1") or box_id.startswith("tjl2") or "TJL1" in txt or "TJL2" in txt:
         return True
     if "QML" in txt:
         return True
     if "DOUBLE TOP" in txt or "DOUBLE BOTTOM" in txt:
         return True
     if "A+" in txt:
-        return False
+        return True
     if ("SBR" in txt or "RBS" in txt) and box.get("in_dual_choch", False):
         return True
     return False
@@ -63,9 +64,11 @@ def is_htf_box_active(box: Dict, current_time: int, htf_sec: Any = 14400) -> boo
     # 2. Mitigation / Breakout check (Rule ZONE-003)
     if box.get("is_mitigated") or box.get("is_broken"):
         mit_time = box.get("mitigated_time") or box.get("right")
-        if mit_time and current_time >= mit_time:
+        if mit_time:
+            if current_time >= mit_time:
+                return False
+        else:
             return False
-        return False
 
     return True
 
@@ -96,7 +99,8 @@ class HTFEngine:
                  show_tjl_boxes: bool = True,
                  tjl_extend: bool = True, # Enable level extension rules
                  box_width_bars: int = 12, # Number of bars box extends from setup candle
-                 active_swing_length_bars: int = 30): # Length of active swing preview lines
+                 active_swing_length_bars: int = 30, # Length of active swing preview lines
+                 **kwargs):
         self.lookback_bars = lookback_bars
         self.show_bos = show_bos
         self.show_choch = show_choch

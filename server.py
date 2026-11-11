@@ -1786,82 +1786,73 @@ async def get_chart_signals(
 
                         htf_c = json.load(f)
 
-        else:
-
-            htf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, tf, 2000, active_market)
-
-            if not htf_c or len(htf_c) < 50:
-
-                fb_path = os.path.join(os.path.dirname(__file__), "data", f"btc_{tf}_oct2026_full.json")
-
+        elif tf in ["4h", "h4"]:
+            for fname in ["btcusdt_4h_2026_full.json", "btcusdt_4h_1y_oct2025_oct2026.json", "btc_4h_oct2026_full.json"]:
+                fb_path = os.path.join(os.path.dirname(__file__), "data", fname)
                 if os.path.exists(fb_path):
-
                     try:
-
                         with open(fb_path, "r", encoding="utf-8") as f:
-
                             htf_c = json.load(f)
-
+                        if htf_c and len(htf_c) >= 500:
+                            break
                     except Exception as e:
-
+                        logging.warning(f"Error loading 4h fallback {fname}: {e}")
+            if not htf_c or len(htf_c) < 50:
+                htf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, tf, 2000, active_market)
+        else:
+            htf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, tf, 2000, active_market)
+            if not htf_c or len(htf_c) < 50:
+                fb_path = os.path.join(os.path.dirname(__file__), "data", f"btc_{tf}_oct2026_full.json")
+                if os.path.exists(fb_path):
+                    try:
+                        with open(fb_path, "r", encoding="utf-8") as f:
+                            htf_c = json.load(f)
+                    except Exception as e:
                         logging.warning(f"Error loading {tf} fallback candles: {e}")
 
-
-
         if not htf_c or len(htf_c) < 25:
-
             return {"symbol": sym, "timeframe": tf, "candles": [], "signals": []}
 
-
-
         if ltf_tf == tf:
-
             ltf_c = htf_c
-
-        else:
-
-            ltf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, ltf_tf, 1000, active_market)
-
+        elif tf in ["4h", "h4"]:
+            for fname in ["btc_5m_oct2026_full.json", "btcusdt_5m_2026_full.json", "btcusdt_5m_1y_oct2025_oct2026.json"]:
+                p_ltf = os.path.join(os.path.dirname(__file__), "data", fname)
+                if os.path.exists(p_ltf):
+                    try:
+                        with open(p_ltf, "r", encoding="utf-8") as f:
+                            ltf_c = json.load(f)
+                        if ltf_c and len(ltf_c) >= 500:
+                            break
+                    except Exception as e:
+                        logging.warning(f"Error loading 5m fallback {fname}: {e}")
+            if not ltf_c or len(ltf_c) < 50:
+                ltf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, ltf_tf, 1000, active_market)
             if not ltf_c:
-
+                ltf_c = htf_c
+        else:
+            ltf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, ltf_tf, 1000, active_market)
+            if not ltf_c:
                 ltf_c = htf_c
 
-
-
-        if tf in ["15m", "1h", "4h"]:
-
+        # Only truncate for 15m/1h - preserve full chronological history for 4h
+        if tf in ["15m", "1h"]:
             htf_sep = [c for c in htf_c if c.get("time", 0) >= sep23_ts]
-
             if len(htf_sep) >= 20:
-
                 htf_c = htf_sep
-
             if ltf_tf != tf and ltf_c:
-
                 ltf_sep = [c for c in ltf_c if c.get("time", 0) >= sep23_ts]
-
                 if len(ltf_sep) >= 20:
-
                     ltf_c = ltf_sep
 
-
-
         if tf in ["1d", "d1"]:
-
             raw_signals = []
-
             out = {"lines": [], "labels": [], "boxes": [], "nearby_levels": [], "htf_trend": "Neutral"}
-
         else:
-
             strat = MTFStrategy(htf_interval=tf, ltf_interval=ltf_tf, min_rr=3.0)
-
-            strat.htf_engine = HTFEngine(lookback_bars=len(htf_c), show_tjl_boxes=True, tjl_extend=True)
-
+            strat.htf_engine = HTFEngine(lookback_bars=len(htf_c), show_tjl_boxes=True, tjl_extend=True, show_retracement_shapes=True)
             out = strat.run_strategy(htf_c, ltf_c)
-
             raw_signals = out.get("signals", [])
-
 
 
         # Generic bullish/bearish engulfing signals removed from HTF per user instruction
@@ -2352,7 +2343,7 @@ async def get_ltf_candles(
 
         if norm_ltf in ["1m", "5m"] and symbol.upper() == "BTCUSDT":
 
-            cand_files = ["btc_1m_oct2026_full.json", "btc_1m_oct2026.json"] if norm_ltf == "1m" else ["btc_5m_oct2026_full.json"]
+            cand_files = ["btc_1m_oct2026_full.json", "btc_1m_oct2026.json"] if norm_ltf == "1m" else ["btc_5m_oct2026_full.json", "btcusdt_5m_2026_full.json", "btcusdt_5m_1y_oct2025_oct2026.json"]
 
             for c_f in cand_files:
 
@@ -2466,11 +2457,30 @@ async def get_ltf_candles(
 
                         logger.warning(f"Error loading HTF fallback boxes: {e}")
 
+        eval_htf_candles = htf_candles
+        if norm_htf in ["4h", "h4"]:
+            for fname in ["btcusdt_4h_2026_full.json", "btcusdt_4h_1y_oct2025_oct2026.json", "btc_4h_oct2026_full.json"]:
+                p_h4 = os.path.join(os.path.dirname(__file__), "data", fname)
+                if os.path.exists(p_h4):
+                    try:
+                        with open(p_h4, "r", encoding="utf-8") as f:
+                            fb_h4 = json.load(f)
+                        if fb_h4 and len(fb_h4) >= 500:
+                            eval_htf_candles = fb_h4
+                            break
+                    except Exception as e:
+                        logger.warning(f"Error loading 4h fallback candles: {e}")
+            if eval_htf_candles and len(eval_htf_candles) >= 50:
+                try:
+                    htf_b_engine = HTFEngine(lookback_bars=len(eval_htf_candles), show_tjl_boxes=True, tjl_extend=True)
+                    htf_boxes = htf_b_engine.run(eval_htf_candles).get("boxes", [])
+                except Exception as e:
+                    logger.warning(f"Error generating 4h HTF boxes: {e}")
         elif not htf_boxes:
 
             if htf_candles and len(htf_candles) >= 50:
 
-                htf_b_engine = HTFEngine(lookback_bars=min(2000, len(htf_candles)), show_tjl_boxes=True, tjl_extend=True, start_marking_time=1790121600)
+                htf_b_engine = HTFEngine(lookback_bars=min(2000, len(htf_candles)), show_tjl_boxes=True, tjl_extend=True)
 
                 htf_boxes = htf_b_engine.run(htf_candles).get("boxes", [])
 
@@ -2486,7 +2496,9 @@ async def get_ltf_candles(
 
                             fb_htf = json.load(f)
 
-                        htf_b_engine = HTFEngine(lookback_bars=len(fb_htf), show_tjl_boxes=True, tjl_extend=True, start_marking_time=1790121600)
+                        eval_htf_candles = fb_htf
+
+                        htf_b_engine = HTFEngine(lookback_bars=len(fb_htf), show_tjl_boxes=True, tjl_extend=True)
 
                         htf_boxes = htf_b_engine.run(fb_htf).get("boxes", [])
 
@@ -2552,9 +2564,9 @@ async def get_ltf_candles(
 
             htf_boxes=htf_boxes,
 
-            htf_sec=INTERVAL_SECONDS.get(norm_htf, 900),
+            htf_sec=INTERVAL_SECONDS.get(norm_htf, 14400 if norm_htf in ["4h", "h4"] else 900),
 
-            htf_candles=htf_candles
+            htf_candles=eval_htf_candles if 'eval_htf_candles' in locals() and eval_htf_candles else htf_candles
 
         )
 
@@ -2650,21 +2662,39 @@ async def get_ltf_candles(
 
             trade = tap_info.get("trade") or trade_logic
 
+            level_desc = "Level of 3 / Level of 4" if winner_p == "5-Wave (Internal)" else "QML / SBR / RBS"
+
             if trade and trade.get("executed"):
 
                 status_msg = f"HTF zone tapped: {tap_info.get('box_name', 'Zone')} | Winner: {winner_p} | BOT TRADE EXECUTED: {trade['action']} ({trade['pattern_name']} @ {trade['level_name']}) Entry: {trade['entry_price']} SL: {trade['sl_price']} TP: {trade['tp_price']} (RR: {trade['rr']}R)"
 
             elif trade and not trade.get("executed"):
 
-                status_msg = f"HTF zone tapped: {tap_info.get('box_name', 'Zone')} | Winner: {winner_p} | TRADE SKIPPED: {trade['pattern_name']} @ {trade['level_name']} RR: {trade['rr']}R < 2.5R"
+                reason = trade.get("rejection_reason") or f"RR {trade.get('rr', 0)}R < 2.5R"
+
+                status_msg = f"HTF zone tapped: {tap_info.get('box_name', 'Zone')} | Winner: {winner_p} | TRADE SKIPPED: {reason}"
 
             else:
 
-                status_msg = f"HTF zone tapped: {tap_info.get('box_name', 'Zone')} | Winner: {winner_p}. Structure frozen at cutoff."
+                status_msg = f"HTF zone tapped: {tap_info.get('box_name', 'Zone')} | Winner: {winner_p} | NO TRADE: Price did not retest {level_desc} with qualifying candlestick confirmation within reaction window."
+
+                if not trade_logic:
+
+                    trade_logic = {
+
+                        "executed": False,
+
+                        "winner_pathway": winner_p,
+
+                        "setup_type": tap_info.get("box_name", "HTF Zone"),
+
+                        "rejection_reason": f"No retest or candlestick confirmation at {level_desc} within reaction window."
+
+                    }
 
         else:
 
-            status_msg = f"Clean {norm_ltf.upper()} candlestick view."
+            status_msg = f"Clean {norm_ltf.upper()} candlestick view (No HTF zone tap on selected candle)."
 
 
 

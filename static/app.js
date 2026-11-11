@@ -2065,10 +2065,63 @@ document.addEventListener('DOMContentLoaded', () => {
                         hudDecReason.textContent = `Target: ${curTr.rr}R | Outcome: ${curTr.outcome || 'OPEN'} (${curTr.pnl_r !== undefined ? ((curTr.pnl_r >= 0 ? '+' : '') + curTr.pnl_r + 'R') : ''})`;
                     }
                 } else if (data.tap_info) {
-                    if (telTypeBadge) telTypeBadge.textContent = 'HTF ZONE TAPPED';
-                    if (telPattern) telPattern.innerHTML = `HTF Zone: <b>${data.tap_info.box_name}</b>`;
-                    if (telOutcome) telOutcome.innerHTML = `Tap Time: <b>${formatDateTime(data.tap_info.tap_time)}</b>`;
-                    if (telBox) telBox.innerHTML = `Approach: <b>Marked from 40 candles prior to tap (${formatDateTime(data.tap_info.start_time)})</b>`;
+                    if (telTypeBadge) {
+                        telTypeBadge.textContent = 'HTF ZONE TAPPED (NO TRADE)';
+                        telTypeBadge.style.background = '#d97706';
+                    }
+                    const winnerP = data.tap_info.winner_pathway || 'Evaluated';
+                    const activeLvlDesc = winnerP === '5-Wave (Internal)' ? 'Level of 3 & Level of 4' : 'QML / SBR / RBS';
+                    if (telPattern) telPattern.innerHTML = `Winner Pathway: <b>${winnerP}</b>`;
+                    if (telOutcome) telOutcome.innerHTML = `Active Levels: <b>${activeLvlDesc}</b>`;
+                    if (telBox) telBox.innerHTML = `Disqualifier: <b>${data.trade_logic?.rejection_reason || data.mtf_status?.message || 'Price did not retest active level with confirmation.'}</b>`;
+
+                    const hudTap = document.getElementById('hud-tap-text');
+                    const hudRace = document.getElementById('hud-race-text');
+                    const hudLevels = document.getElementById('hud-levels-text');
+                    const hudConf = document.getElementById('hud-conf-text');
+                    const hudDecBadge = document.getElementById('hud-decision-badge');
+                    const hudDecReason = document.getElementById('hud-decision-reason');
+
+                    if (hudTap) hudTap.textContent = `Tapped ${data.tap_info.box_name || 'HTF Zone'}`;
+                    if (hudRace) hudRace.textContent = `Winner: ${winnerP}`;
+                    if (hudLevels) hudLevels.textContent = `${winnerP === '5-Wave (Internal)' ? 'L3 / L4' : 'QML / SBR'} Active`;
+                    if (hudConf) hudConf.textContent = 'Retest / Pattern Pending';
+                    if (hudDecBadge) {
+                        hudDecBadge.textContent = 'NO TRADE EXECUTED';
+                        hudDecBadge.style.background = '#d97706';
+                        hudDecBadge.style.color = '#ffffff';
+                    }
+                    if (hudDecReason) {
+                        hudDecReason.textContent = data.trade_logic?.rejection_reason || data.mtf_status?.message || 'Price did not retest active level with confirmation.';
+                    }
+                } else {
+                    if (telTypeBadge) {
+                        telTypeBadge.textContent = `${ltfInterval.toUpperCase()} CLEAN VIEW`;
+                        telTypeBadge.style.background = '#3b82f6';
+                    }
+                    if (telPattern) telPattern.innerHTML = `Indicators: <b>None</b>`;
+                    if (telOutcome) telOutcome.innerHTML = `Status: <b>CLEAN</b>`;
+                    if (telBox) telBox.innerHTML = `Details: <b>Displaying raw ${ltfInterval.toUpperCase()} candles</b>`;
+
+                    const hudTap = document.getElementById('hud-tap-text');
+                    const hudRace = document.getElementById('hud-race-text');
+                    const hudLevels = document.getElementById('hud-levels-text');
+                    const hudConf = document.getElementById('hud-conf-text');
+                    const hudDecBadge = document.getElementById('hud-decision-badge');
+                    const hudDecReason = document.getElementById('hud-decision-reason');
+
+                    if (hudTap) hudTap.textContent = 'No HTF Zone Tapped';
+                    if (hudRace) hudRace.textContent = 'None';
+                    if (hudLevels) hudLevels.textContent = 'None';
+                    if (hudConf) hudConf.textContent = 'None';
+                    if (hudDecBadge) {
+                        hudDecBadge.textContent = 'NO ZONE TAP';
+                        hudDecBadge.style.background = '#475569';
+                        hudDecBadge.style.color = '#ffffff';
+                    }
+                    if (hudDecReason) {
+                        hudDecReason.textContent = 'Selected candle did not tap an active HTF Supply/Demand level.';
+                    }
                 }
 
                 setTimeout(() => {
@@ -2123,6 +2176,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (t) {
             openSplitLTF(t);
         }
+    }
+
+    // October 2026 Inspection Mode Button
+    const btnOct2026 = document.getElementById('btn-october-2026');
+    if (btnOct2026) {
+        btnOct2026.addEventListener('click', () => {
+            console.log("[Oct 2026 Mode] Switching to H4 October 2026 Inspection Mode");
+            if (activeTimeframe !== '4h') {
+                setTimeframe('4h');
+            } else if (chart && currentCandles && currentCandles.length > 0) {
+                const octStart = currentCandles.find(c => c.time >= 1790812800);
+                const octEnd = currentCandles.find(c => c.time >= 1793491199) || currentCandles[currentCandles.length - 1];
+                if (octStart) {
+                    chart.timeScale().setVisibleRange({
+                        from: octStart.time,
+                        to: octEnd ? octEnd.time : currentCandles[currentCandles.length - 1].time
+                    });
+                }
+            }
+        });
     }
 
     // Expose globally for API & testing
@@ -2943,7 +3016,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const lblTime = lbl.x || lbl.time;
                 if (window.isSimulationReplayActive && lblTime && lblTime > maxVisibleTime) return false;
                 const txt = (lbl.text || '').toLowerCase();
-                return txt.includes('tap');
+                return txt.includes('tap') || txt.includes('exit') || txt.includes('point') || txt.includes('2rtr') || txt.includes('swing') || txt.includes('level') || txt.includes('choch') || txt.includes('bos');
             });
 
             if (Array.isArray(tapLabelsToRender)) {
@@ -3827,14 +3900,23 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateQuickSignalsStrip(currentStrategy.signals);
                     resizeCanvas();
                     if (chart) {
-                        const sep23 = currentCandles.find(c => c.time >= 1790121600);
-                        if (['15m', '1h', '4h'].includes(activeTimeframe) && sep23) {
+                        const octStart = currentCandles.find(c => c.time >= 1790812800);
+                        const octEnd = currentCandles.find(c => c.time >= 1793491199) || currentCandles[currentCandles.length - 1];
+                        if (['4h', 'h4'].includes(activeTimeframe) && octStart) {
                             chart.timeScale().setVisibleRange({
-                                from: sep23.time,
-                                to: currentCandles[currentCandles.length - 1].time
+                                from: octStart.time,
+                                to: octEnd ? octEnd.time : currentCandles[currentCandles.length - 1].time
                             });
                         } else {
-                            chart.timeScale().fitContent();
+                            const sep23 = currentCandles.find(c => c.time >= 1790121600);
+                            if (['15m', '1h'].includes(activeTimeframe) && sep23) {
+                                chart.timeScale().setVisibleRange({
+                                    from: sep23.time,
+                                    to: currentCandles[currentCandles.length - 1].time
+                                });
+                            } else {
+                                chart.timeScale().fitContent();
+                            }
                         }
                     }
                     updateLegend(htfOhlcLegend, null, candlestickSeries, currentCandles);
