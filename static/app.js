@@ -39,7 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let hoveredSignal = null;
 
     // Timeframe selector buttons (H4, H1, M15, M5, M1)
-    const tfButtons = document.querySelectorAll('.tf-btn');
+    const tfButtons = document.querySelectorAll('.tf-btn[data-tf]');
     let activeTimeframe = '15m';
     let activeSymbol = 'BTCUSDT';
     window.activeTimeframe = activeTimeframe;
@@ -103,9 +103,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function setTimeframe(tf) {
-        activeTimeframe = tf.toLowerCase(); window.activeTimeframe = activeTimeframe;
+        if (!tf) return;
+        activeTimeframe = tf.toLowerCase();
+        window.activeTimeframe = activeTimeframe;
         tfButtons.forEach(btn => {
-            if (btn.getAttribute('data-tf').toLowerCase() === activeTimeframe) {
+            const bTf = (btn.getAttribute('data-tf') || '').toLowerCase();
+            if (bTf === activeTimeframe) {
                 btn.classList.add('active');
             } else {
                 btn.classList.remove('active');
@@ -3776,9 +3779,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (symbolSelect) symbolSelect.value = activeSymbol;
                     }
                     if (data.htf_interval) {
-                        activeTimeframe = data.htf_interval.toLowerCase(); window.activeTimeframe = activeTimeframe;
+                        activeTimeframe = data.htf_interval.toLowerCase();
+                        window.activeTimeframe = activeTimeframe;
                         tfButtons.forEach(btn => {
-                            if (btn.getAttribute('data-tf').toLowerCase() === activeTimeframe) {
+                            const bTf = (btn.getAttribute('data-tf') || '').toLowerCase();
+                            if (bTf === activeTimeframe) {
                                 btn.classList.add('active');
                             } else {
                                 btn.classList.remove('active');
@@ -3801,14 +3806,23 @@ document.addEventListener('DOMContentLoaded', () => {
                             renderAlgoTradeMarkers(currentStrategy ? currentStrategy.signals : []);
                         }
                         if (chart) {
-                            const sep23 = currentCandles.find(c => c.time >= 1790121600);
-                            if (['15m', '1h', '4h'].includes(activeTimeframe) && sep23) {
+                            const octStart = currentCandles.find(c => c.time >= 1790812800);
+                            const octEnd = currentCandles.find(c => c.time >= 1793491199) || currentCandles[currentCandles.length - 1];
+                            if (['4h', 'h4'].includes(activeTimeframe) && octStart) {
                                 chart.timeScale().setVisibleRange({
-                                    from: sep23.time,
-                                    to: currentCandles[currentCandles.length - 1].time
+                                    from: octStart.time,
+                                    to: octEnd ? octEnd.time : currentCandles[currentCandles.length - 1].time
                                 });
                             } else {
-                                chart.timeScale().fitContent();
+                                const sep23 = currentCandles.find(c => c.time >= 1790121600);
+                                if (['15m', '1h'].includes(activeTimeframe) && sep23) {
+                                    chart.timeScale().setVisibleRange({
+                                        from: sep23.time,
+                                        to: currentCandles[currentCandles.length - 1].time
+                                    });
+                                } else {
+                                    chart.timeScale().fitContent();
+                                }
                             }
                         }
                         updateLegend(htfOhlcLegend, null, candlestickSeries, currentCandles);

@@ -636,32 +636,49 @@ async def restart_feed(symbol: str, htf_tf: str):
 
     loop = asyncio.get_event_loop()
 
-    raw_htf = await loop.run_in_executor(None, fetch_klines_paginated, active_symbol, active_htf_interval, 10000, active_market)
+    htf_candles = []
+    if active_symbol == "BTCUSDT":
+        if active_htf_interval in ["4h", "h4"]:
+            for fname in ["btcusdt_4h_2026_full.json", "btcusdt_4h_1y_oct2025_oct2026.json", "btc_4h_oct2026_full.json"]:
+                p_fb = os.path.join(os.path.dirname(__file__), "data", fname)
+                if os.path.exists(p_fb):
+                    try:
+                        with open(p_fb, "r", encoding="utf-8") as f_fb:
+                            htf_candles = json.load(f_fb)
+                        if htf_candles and len(htf_candles) >= 500:
+                            break
+                    except Exception as e:
+                        logging.warning(f"Error loading {fname}: {e}")
+        elif active_htf_interval in ["1h", "h1"]:
+            for fname in ["btcusdt_1h_1y_oct2025_oct2026.json", "btc_1h_oct2026_full.json"]:
+                p_fb = os.path.join(os.path.dirname(__file__), "data", fname)
+                if os.path.exists(p_fb):
+                    try:
+                        with open(p_fb, "r", encoding="utf-8") as f_fb:
+                            htf_candles = json.load(f_fb)
+                        if htf_candles and len(htf_candles) >= 500:
+                            break
+                    except Exception as e:
+                        logging.warning(f"Error loading {fname}: {e}")
+        elif active_htf_interval in ["15m", "m15"]:
+            for fname in ["btc_15m_oct2026_full.json", "btcusdt_15m_1y_oct2025_oct2026.json"]:
+                p_fb = os.path.join(os.path.dirname(__file__), "data", fname)
+                if os.path.exists(p_fb):
+                    try:
+                        with open(p_fb, "r", encoding="utf-8") as f_fb:
+                            htf_candles = json.load(f_fb)
+                        if htf_candles and len(htf_candles) >= 500:
+                            break
+                    except Exception as e:
+                        logging.warning(f"Error loading {fname}: {e}")
 
-    htf_candles = dedupe_and_sort_candles(raw_htf)[-10000:]
+    if not htf_candles or len(htf_candles) < 50:
+        raw_htf = await loop.run_in_executor(None, fetch_klines_paginated, active_symbol, active_htf_interval, 2000, active_market)
+        htf_candles = dedupe_and_sort_candles(raw_htf)[-2000:] if raw_htf else []
 
-    if (not htf_candles or len(htf_candles) < 50) and active_symbol == "BTCUSDT":
-
-        fb_path = os.path.join(os.path.dirname(__file__), "data", f"btc_{active_htf_interval}_oct2026_full.json")
-
-        if os.path.exists(fb_path):
-
-            try:
-
-                with open(fb_path, "r", encoding="utf-8") as f_fb:
-
-                    htf_candles = json.load(f_fb)
-
-            except Exception as e:
-
-                logging.warning(f"Error loading {active_htf_interval} fallback: {e}")
-
-    if active_htf_interval in ["15m", "1h", "4h"]:
-
+    if active_htf_interval in ["15m", "1h"]:
         htf_sep = [c for c in htf_candles if c.get("time", 0) >= 1790121600]
-
         if len(htf_sep) >= 20:
-
             htf_candles = htf_sep
 
 
@@ -1797,6 +1814,19 @@ async def get_chart_signals(
                             break
                     except Exception as e:
                         logging.warning(f"Error loading 4h fallback {fname}: {e}")
+            if not htf_c or len(htf_c) < 50:
+                htf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, tf, 2000, active_market)
+        elif tf in ["1h", "h1"]:
+            for fname in ["btcusdt_1h_1y_oct2025_oct2026.json", "btc_1h_oct2026_full.json"]:
+                fb_path = os.path.join(os.path.dirname(__file__), "data", fname)
+                if os.path.exists(fb_path):
+                    try:
+                        with open(fb_path, "r", encoding="utf-8") as f:
+                            htf_c = json.load(f)
+                        if htf_c and len(htf_c) >= 500:
+                            break
+                    except Exception as e:
+                        logging.warning(f"Error loading 1h fallback {fname}: {e}")
             if not htf_c or len(htf_c) < 50:
                 htf_c = await loop.run_in_executor(None, fetch_klines_paginated, sym, tf, 2000, active_market)
         else:
